@@ -1,0 +1,12 @@
+node_modules/
+dist/
+build/
+data/
+*.db
+*.log
+.env
+.env.*
+!.env.example
+autodidact.config.json
+coverage/
+.DS_Store
