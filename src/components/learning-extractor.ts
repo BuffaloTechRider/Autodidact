@@ -4,6 +4,7 @@ import type {
     ILLMClient,
     NewKnowledgeEntry,
     NewSkillEntry,
+    NewToolDefinition,
     SelfTestQuestion,
 } from '../types.js';
 import type { Logger } from '../utils/logger.js';
@@ -14,6 +15,7 @@ const EXTRACTION_PROMPT = `You are a knowledge extraction system. Analyze the fo
 1. **Knowledge entries**: Factual claims or information that can be reused.
 2. **Skill entries**: Step-by-step procedures or reasoning patterns.
 3. **Self-test questions**: At least one question per knowledge entry to verify it later.
+4. **Tool descriptions**: If the answer involves external APIs, tools, or data sources, describe them with their endpoint URL, HTTP method, and parameters.
 
 Respond with ONLY valid JSON in this exact format:
 {
@@ -29,13 +31,21 @@ Respond with ONLY valid JSON in this exact format:
       "name": "skill_name",
       "description": "what this skill does",
       "steps": [
-        { "order": 1, "description": "step description", "input": "what is needed", "output": "what is produced" }
+        { "order": 1, "description": "step description", "input": "what is needed", "output": "what is produced", "toolName": "optional_tool_name" }
       ],
       "tags": ["tag1"]
     }
   ],
   "selfTestQuestions": [
     { "knowledgeIndex": 0, "question": "A question to verify the knowledge entry" }
+  ],
+  "tools": [
+    {
+      "name": "tool_name",
+      "description": "what the tool does",
+      "type": "http",
+      "config": { "url": "https://api.example.com/endpoint/{{param}}", "method": "GET" }
+    }
   ]
 }
 
@@ -43,7 +53,11 @@ Rules:
 - Each knowledge entry must have content, tags, and confidence (0-1).
 - Each skill must have at least one step with order, description, input, and output.
 - Generate at least one self-test question per knowledge entry.
-- knowledgeIndex refers to the zero-based index in the knowledge array.`;
+- knowledgeIndex refers to the zero-based index in the knowledge array.
+- If the response mentions any external APIs or tools, include them in the tools array.
+- Each tool must have a name, description, type (http, code, or shell), and config.
+- For HTTP tools, config should include url and method at minimum.
+- Use {{param}} syntax in URLs for template parameters.`;
 
 interface RawExtraction {
     knowledge?: {
@@ -67,6 +81,21 @@ interface RawExtraction {
         knowledgeIndex?: number;
         question?: string;
     }[];
+    tools?: {
+        name?: string;
+        description?: string;
+        type?: string;
+        config?: {
+            url?: string;
+            method?: string;
+            headers?: Record<string, string>;
+            authType?: string;
+            authKey?: string;
+            code?: string;
+            command?: string;
+            timeout?: number;
+        };
+    }[];
 }
 
 export class LearningExtractor implements ILearningExtractor {
@@ -79,7 +108,7 @@ export class LearningExtractor implements ILearningExtractor {
     }
 
     async extract(query: string, response: string): Promise<ExtractionResult> {
-        const empty: ExtractionResult = { knowledge: [], skills: [], selfTestQuestions: [] };
+        const empty: ExtractionResult = { knowledge: [], skills: [], selfTestQuestions: [], tools: [] };
 
         try {
             const llmResponse = await this.llmClient.chat([
@@ -122,6 +151,7 @@ export class LearningExtractor implements ILearningExtractor {
         const knowledge: NewKnowledgeEntry[] = [];
         const skills: NewSkillEntry[] = [];
         const selfTestQuestions: SelfTestQuestion[] = [];
+        const tools: NewToolDefinition[] = [];
 
         // Build knowledge entries
         if (Array.isArray(raw.knowledge)) {
@@ -197,6 +227,32 @@ export class LearningExtractor implements ILearningExtractor {
             }
         }
 
-        return { knowledge, skills, selfTestQuestions };
+        // Build tool entries
+        if (Array.isArray(raw.tools)) {
+            for (const t of raw.tools) {
+                if (!t.name || !t.description || !t.type || !t.config) continue;
+                const validTypes = ['http', 'code', 'shell'];
+                if (!validTypes.includes(t.type)) continue;
+
+                tools.push({
+                    name: t.name,
+                    description: t.description,
+                    type: t.type as 'http' | 'code' | 'shell',
+                    config: {
+                        ...(t.config.url ? { url: t.config.url } : {}),
+                        ...(t.config.method ? { method: t.config.method } : {}),
+                        ...(t.config.headers ? { headers: t.config.headers } : {}),
+                        ...(t.config.authType ? { authType: t.config.authType as 'none' | 'api_key' | 'bearer' | 'basic' } : {}),
+                        ...(t.config.authKey ? { authKey: t.config.authKey } : {}),
+                        ...(t.config.code ? { code: t.config.code } : {}),
+                        ...(t.config.command ? { command: t.config.command } : {}),
+                        ...(t.config.timeout ? { timeout: t.config.timeout } : {}),
+                    },
+                    source: 'learned',
+                });
+            }
+        }
+
+        return { knowledge, skills, selfTestQuestions, tools };
     }
 }

@@ -15,13 +15,13 @@ import type {
     ISelfVerificationSystem,
     ISkillEvolver,
     ISkillStore,
+    IToolRegistry,
     IUserProfile,
     RoutingResult,
 } from '../types.js';
-import { nowISO } from '../utils/time.js';
+import { generateId } from '../utils/id.js';
 import type { Logger } from '../utils/logger.js';
 import { defaultLogger } from '../utils/logger.js';
-import { generateId } from '../utils/id.js';
 import { CloudRouter } from './cloud-router.js';
 import { ConfidenceEvaluator } from './confidence-evaluator.js';
 import { KnowledgeStore } from './knowledge-store.js';
@@ -32,6 +32,7 @@ import { SelfVerificationSystem } from './self-verification.js';
 import { SkillEvolver } from './skill-evolver.js';
 import { SkillStore } from './skill-store.js';
 import { UserProfile } from './user-profile.js';
+import { ToolRegistry } from './tool-registry.js';
 
 /**
  * Optional custom component implementations for dependency injection.
@@ -47,6 +48,7 @@ export interface AgentComponents {
     skillEvolver?: ISkillEvolver;
     userProfile?: IUserProfile;
     metricsTracker?: IMetricsTracker;
+    toolRegistry?: IToolRegistry;
     logger?: Logger;
 }
 
@@ -63,6 +65,7 @@ export class Agent implements IAgent {
     private readonly skillEvolver: ISkillEvolver;
     private readonly userProfile: IUserProfile;
     private readonly metricsTracker: IMetricsTracker;
+    private readonly toolRegistry: IToolRegistry;
     private readonly logger: Logger;
     private queryCount: number = 0;
 
@@ -131,6 +134,12 @@ export class Agent implements IAgent {
         this.userProfile = components?.userProfile ?? new UserProfile(this.db, this.logger);
 
         this.metricsTracker = components?.metricsTracker ?? new MetricsTracker(this.db, this.logger);
+
+        this.toolRegistry = components?.toolRegistry ?? new ToolRegistry(
+            this.db,
+            this.config.toolRegistry,
+            this.logger,
+        );
     }
 
     async query(text: string): Promise<AgentResponse> {
@@ -160,7 +169,9 @@ export class Agent implements IAgent {
             if (routing.decision === 'ESCALATE') {
                 // 4b. ESCALATE: call CloudRouter
                 const cloudContext = this.buildContext(knowledgeHits, skillHits);
-                const cloudResponse = await this.cloudRouter.escalate(text, cloudContext);
+                const escalationContext = cloudContext
+                    + '\n\nIMPORTANT: If you use any external APIs or tools to answer this, describe them with their endpoint URL, HTTP method, and parameters.';
+                const cloudResponse = await this.cloudRouter.escalate(text, escalationContext);
                 content = cloudResponse.content;
                 cost = cloudResponse.cost;
 
@@ -183,6 +194,43 @@ export class Agent implements IAgent {
                         embedding: await this.safeEmbed(s.description),
                     });
                     sourcesUsed.push(entry.id);
+                }
+
+                // Auto-register discovered tools
+                if (this.config.toolRegistry.enabled && extraction.tools.length > 0) {
+                    for (const t of extraction.tools) {
+                        try {
+                            // Skip if tool already exists
+                            const existing = this.toolRegistry.get(t.name);
+                            if (existing) {
+                                this.logger.debug('Agent: tool already registered, skipping', { name: t.name });
+                                continue;
+                            }
+                            const registered = this.toolRegistry.register({
+                                ...t,
+                                source: 'learned',
+                            });
+                            this.logger.info('Agent: auto-registered discovered tool', {
+                                name: registered.name,
+                                type: registered.type,
+                            });
+
+                            // Auto-verify if configured
+                            if (this.config.toolRegistry.autoVerify && registered.type === 'http') {
+                                this.toolRegistry.verify(registered.name).catch((err) => {
+                                    this.logger.warn('Agent: auto-verify failed for tool', {
+                                        name: registered.name,
+                                        error: String(err),
+                                    });
+                                });
+                            }
+                        } catch (err) {
+                            this.logger.warn('Agent: failed to register discovered tool', {
+                                name: t.name,
+                                error: err instanceof Error ? err.message : String(err),
+                            });
+                        }
+                    }
                 }
             } else {
                 // 4a. LOCAL or HEDGE: generate via local LLM

@@ -187,6 +187,7 @@ export interface ExtractionResult {
     knowledge: NewKnowledgeEntry[];
     skills: NewSkillEntry[];
     selfTestQuestions: SelfTestQuestion[];
+    tools: NewToolDefinition[];
 }
 
 export interface SelfTestQuestion {
@@ -276,6 +277,12 @@ export interface AutodidactConfig {
         l2TokenBudget: number;
         l3TokenBudget: number;
         l3Threshold: number;
+    };
+
+    toolRegistry: {
+        enabled: boolean;
+        autoVerify: boolean;
+        decayThreshold: number;
     };
 }
 
@@ -421,4 +428,70 @@ export interface IMetricsTracker {
     }): void;
     recordOutcome(queryId: string, outcome: QueryOutcome, responseText?: string): void;
     getMetrics(): AgentMetrics;
+}
+
+// ── Tool Registry Types ─────────────────────────────────────
+export interface ToolDefinition {
+    id: string;
+    name: string;
+    description: string;
+    type: 'http' | 'code' | 'shell';
+    config: ToolConfig;
+    source: 'built_in' | 'user_registered' | 'learned';
+    status: 'unverified' | 'verified' | 'failed' | 'dormant';
+    confidence: number;
+    usageCount: number;
+    successCount: number;
+    failureCount: number;
+    createdAt: string;
+    updatedAt: string;
+    learnedFromEscalation?: string;
+}
+
+export interface ToolConfig {
+    url?: string;
+    method?: string;
+    headers?: Record<string, string>;
+    authType?: 'none' | 'api_key' | 'bearer' | 'basic';
+    authKey?: string;
+    code?: string;
+    command?: string;
+    timeout?: number;
+}
+
+export interface NewToolDefinition {
+    name: string;
+    description: string;
+    type: 'http' | 'code' | 'shell';
+    config: ToolConfig;
+    source?: 'built_in' | 'user_registered' | 'learned';
+    learnedFromEscalation?: string;
+}
+
+export interface ToolExecutionResult {
+    success: boolean;
+    output: string;
+    error?: string;
+    latencyMs: number;
+}
+
+export interface IToolRegistry {
+    register(tool: NewToolDefinition): ToolDefinition;
+    get(name: string): ToolDefinition | null;
+    getById(id: string): ToolDefinition | null;
+    execute(name: string, params: Record<string, string>): Promise<ToolExecutionResult>;
+    verify(name: string): Promise<boolean>;
+    list(filter?: { source?: string; status?: string }): ToolDefinition[];
+    getStats(): ToolRegistryStats;
+    applyDecay(decayRate: number): void;
+}
+
+export interface ToolRegistryStats {
+    total: number;
+    verified: number;
+    failed: number;
+    dormant: number;
+    builtIn: number;
+    learned: number;
+    userRegistered: number;
 }

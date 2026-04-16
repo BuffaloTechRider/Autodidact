@@ -157,6 +157,29 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_valid_from ON knowledge_entries(valid_f
 CREATE INDEX IF NOT EXISTS idx_knowledge_valid_to ON knowledge_entries(valid_to);
 `;
 
+const MIGRATION_V3 = `
+-- ── Tool Registry ───────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS tool_registry (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  description TEXT NOT NULL,
+  type TEXT NOT NULL,
+  config TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT 'user_registered',
+  status TEXT NOT NULL DEFAULT 'unverified',
+  confidence REAL NOT NULL DEFAULT 0.5,
+  usage_count INTEGER NOT NULL DEFAULT 0,
+  success_count INTEGER NOT NULL DEFAULT 0,
+  failure_count INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  learned_from_escalation TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_tool_name ON tool_registry(name);
+CREATE INDEX IF NOT EXISTS idx_tool_status ON tool_registry(status);
+CREATE INDEX IF NOT EXISTS idx_tool_source ON tool_registry(source);
+`;
+
 export function initDatabase(dbPath: string): Database.Database {
   const db = new Database(dbPath);
 
@@ -168,10 +191,15 @@ export function initDatabase(dbPath: string): Database.Database {
   if (currentVersion < 1) {
     db.exec(SCHEMA_V1);
     db.exec(MIGRATION_V2);
-    db.pragma('user_version = 2');
+    db.exec(MIGRATION_V3);
+    db.pragma('user_version = 3');
   } else if (currentVersion < 2) {
     db.exec(MIGRATION_V2);
-    db.pragma('user_version = 2');
+    db.exec(MIGRATION_V3);
+    db.pragma('user_version = 3');
+  } else if (currentVersion < 3) {
+    db.exec(MIGRATION_V3);
+    db.pragma('user_version = 3');
   }
 
   return db;

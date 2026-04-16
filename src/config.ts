@@ -59,6 +59,12 @@ export const DEFAULT_CONFIG: AutodidactConfig = {
         l3TokenBudget: 1000,
         l3Threshold: 0.5,
     },
+
+    toolRegistry: {
+        enabled: true,
+        autoVerify: true,
+        decayThreshold: 0.1,
+    },
 };
 
 /**
@@ -103,6 +109,10 @@ export function resolveConfig(partial?: Partial<AutodidactConfig>): AutodidactCo
         contextLayers: {
             ...DEFAULT_CONFIG.contextLayers,
             ...partial.contextLayers,
+        },
+        toolRegistry: {
+            ...DEFAULT_CONFIG.toolRegistry,
+            ...partial.toolRegistry,
         },
     };
 }

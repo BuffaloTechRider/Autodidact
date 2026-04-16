@@ -14,6 +14,7 @@ export { UserProfile } from './components/user-profile.js';
 export { MetricsTracker } from './components/metrics-tracker.js';
 export { LLMClient } from './components/llm-client.js';
 export { ContextBuilder } from './components/context-builder.js';
+export { ToolRegistry } from './components/tool-registry.js';
 
 // ── Types and Interfaces ────────────────────────────────────
 export type {
@@ -65,6 +66,12 @@ export type {
     ISkillEvolver,
     IUserProfile,
     IMetricsTracker,
+    IToolRegistry,
+    ToolDefinition,
+    ToolConfig,
+    NewToolDefinition,
+    ToolExecutionResult,
+    ToolRegistryStats,
 } from './types.js';
 
 // ── Config ──────────────────────────────────────────────────

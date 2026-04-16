@@ -85,6 +85,28 @@ export const NewSkillEntrySchema = z.object({
     metadata: z.record(z.unknown()).optional(),
 });
 
+// ── Tool Config Schema ───────────────────────────────────────
+export const ToolConfigSchema = z.object({
+    url: z.string().optional(),
+    method: z.string().optional(),
+    headers: z.record(z.string()).optional(),
+    authType: z.enum(['none', 'api_key', 'bearer', 'basic']).optional(),
+    authKey: z.string().optional(),
+    code: z.string().optional(),
+    command: z.string().optional(),
+    timeout: z.number().positive().optional(),
+});
+
+// ── New Tool Definition Schema ──────────────────────────────
+export const NewToolDefinitionSchema = z.object({
+    name: z.string().min(1),
+    description: z.string().min(1),
+    type: z.enum(['http', 'code', 'shell']),
+    config: ToolConfigSchema,
+    source: z.enum(['built_in', 'user_registered', 'learned']).optional(),
+    learnedFromEscalation: z.string().optional(),
+});
+
 // ── Extraction Result Schema ────────────────────────────────
 export const ExtractionResultSchema = z.object({
     knowledge: z.array(NewKnowledgeEntrySchema),
@@ -95,6 +117,7 @@ export const ExtractionResultSchema = z.object({
             question: z.string(),
         })
     ),
+    tools: z.array(NewToolDefinitionSchema),
 });
 
 // ── Autodidact Config Schema ────────────────────────────────
@@ -168,6 +191,14 @@ export const AutodidactConfigSchema = z.object({
             l2TokenBudget: z.number().int().positive().default(500),
             l3TokenBudget: z.number().int().positive().default(1000),
             l3Threshold: z.number().min(0).max(1).default(0.5),
+        })
+        .default({}),
+
+    toolRegistry: z
+        .object({
+            enabled: z.boolean().default(true),
+            autoVerify: z.boolean().default(true),
+            decayThreshold: z.number().min(0).max(1).default(0.1),
         })
         .default({}),
 });
