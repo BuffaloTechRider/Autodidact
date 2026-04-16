@@ -1,25 +1,51 @@
 {
-    "name": "autodidact",
+    "name": "evoagent",
     "version": "0.1.0",
-    "description": "Local-first, self-learning AI agent framework",
+    "description": "Self-learning, local-first AI agent framework — gets smarter the more you use it",
     "type": "module",
     "main": "dist/index.js",
     "types": "dist/index.d.ts",
+    "exports": {
+        ".": {
+            "import": "./dist/index.js",
+            "types": "./dist/index.d.ts"
+        }
+    },
     "scripts": {
         "build": "tsc",
         "test": "vitest run",
-        "test:watch": "vitest",
-        "demo": "tsx demo/run-demo.ts"
+        "test:unit": "vitest run tests/unit/",
+        "test:props": "vitest run tests/properties/",
+        "test:coverage": "vitest run --coverage",
+        "cli": "tsx src/cli.ts"
     },
     "keywords": [
         "ai",
         "agent",
         "self-learning",
         "local-first",
-        "llm"
+        "llm",
+        "framework",
+        "thompson-sampling",
+        "knowledge-base"
     ],
     "license": "MIT",
     "engines": {
         "node": ">=18.0.0"
+    },
+    "dependencies": {
+        "better-sqlite3": "^11.0.0",
+        "openai": "^4.70.0",
+        "uuid": "^10.0.0",
+        "zod": "^3.23.0"
+    },
+    "devDependencies": {
+        "@types/better-sqlite3": "^7.6.0",
+        "@types/node": "^22.0.0",
+        "@types/uuid": "^10.0.0",
+        "fast-check": "^3.22.0",
+        "tsx": "^4.19.0",
+        "typescript": "^5.6.0",
+        "vitest": "^2.1.0"
     }
 }

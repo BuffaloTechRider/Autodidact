@@ -1,8 +1,8 @@
-# EvoAgent
+# Autodidact
 
 The open-source self-learning agent framework. Local-first, privacy-first, gets smarter every day.
 
-EvoAgent is a TypeScript/Node.js SDK for building AI agents that learn from experience. It wraps a frozen local model in intelligent infrastructure — confidence routing, tiered memory, procedural skills, and a self-verification loop — so the agent improves without fine-tuning, without sending your data to the cloud, and without costing more over time.
+Autodidact is a TypeScript/Node.js SDK for building AI agents that learn from experience. It wraps a frozen local model in intelligent infrastructure — confidence routing, tiered memory, procedural skills, and a self-verification loop — so the agent improves without fine-tuning, without sending your data to the cloud, and without costing more over time.
 
 ```
 Day 1:   Agent knows nothing. Escalates 90% of queries to cloud.
@@ -56,11 +56,11 @@ The agent escalates once, learns forever. Next time a similar question comes up,
 ## Quick Start
 
 ```bash
-npm install evoagent
+npm install Autodidact
 ```
 
 ```typescript
-import { Agent } from 'evoagent';
+import { Agent } from 'Autodidact';
 
 const agent = new Agent({
   localLLM: {
@@ -78,7 +78,7 @@ const agent = new Agent({
       priority: 1,
     }],
   },
-  database: { path: './evoagent.db' },
+  database: { path: './Autodidact.db' },
 });
 
 // First time: escalates to cloud, learns from response
@@ -95,7 +95,7 @@ console.log(r2.cost);          // $0.00
 
 ## Architecture
 
-EvoAgent is a framework, not an application. Every component is a TypeScript interface you can swap:
+Autodidact is a framework, not an application. Every component is a TypeScript interface you can swap:
 
 | Component | What it does |
 |-----------|-------------|
@@ -125,7 +125,7 @@ metrics.totalSkillEntries     // 23 procedures learned
 
 ## Configuration
 
-EvoAgent works with minimal config (just `localLLM` and `cloudRouter.providers`). Everything else has sensible defaults:
+Autodidact works with minimal config (just `localLLM` and `cloudRouter.providers`). Everything else has sensible defaults:
 
 ```typescript
 const agent = new Agent({
@@ -155,7 +155,7 @@ const agent = new Agent({
     defaultProfile: 'default',
     autoExtract: true,
   },
-  database: { path: './evoagent.db' },
+  database: { path: './Autodidact.db' },
 });
 ```
 
@@ -167,19 +167,19 @@ const agent = new Agent({
 
 **Phase 3**: Hive network. Agents teaching agents. Knowledge marketplace with Knowledge Tokens. A master agent in legal teaches your agent GDPR patterns. Your DevOps agent shares deployment skills with the community. The network effect that makes every agent smarter.
 
-## Why EvoAgent?
+## Why Autodidact?
 
 Every other AI agent is stateless. They forget everything after each conversation. They cost the same on day 300 as day 1. They send your data to the cloud every single time.
 
-EvoAgent remembers. It learns. It gets cheaper. It keeps your data local. And it gets measurably better every week — you can see the curve.
+Autodidact remembers. It learns. It gets cheaper. It keeps your data local. And it gets measurably better every week — you can see the curve.
 
 ## Contributing
 
 We welcome contributions. See the [spec docs](.kiro/specs/autodidact-framework/) for the full requirements, design, and implementation plan.
 
 ```bash
-git clone https://github.com/BuffaloTechRider/EvoAgent.git
-cd EvoAgent
+git clone https://github.com/BuffaloTechRider/Autodidact.git
+cd Autodidact
 npm install
 npm test
 ```
