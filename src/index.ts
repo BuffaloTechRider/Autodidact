@@ -15,6 +15,8 @@ export { MetricsTracker } from './components/metrics-tracker.js';
 export { LLMClient } from './components/llm-client.js';
 export { ContextBuilder } from './components/context-builder.js';
 export { ToolRegistry } from './components/tool-registry.js';
+export { BedrockRouter } from './components/bedrock-router.js';
+export type { BedrockProviderConfig } from './components/bedrock-router.js';
 
 // ── Types and Interfaces ────────────────────────────────────
 export type {

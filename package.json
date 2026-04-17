@@ -34,6 +34,7 @@
         "node": ">=18.0.0"
     },
     "dependencies": {
+        "@aws-sdk/client-bedrock-runtime": "^3.1031.0",
         "better-sqlite3": "^11.0.0",
         "openai": "^4.70.0",
         "uuid": "^10.0.0",
