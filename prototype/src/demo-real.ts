@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * EvoAgent Real Model Demo — uses Ollama with real LLM + embeddings.
+ * Autodidact Real Model Demo — uses Ollama with real LLM + embeddings.
  *
  * Prerequisites:
  *   - Ollama running with qwen2.5:7b and nomic-embed-text
@@ -14,7 +14,7 @@ import { LLMClient } from './components/llm-client.js';
 import type { AutodidactConfig, ChatMessage, ChatOptions, ChatResponse, ILLMClient } from './types.js';
 import * as fs from 'node:fs';
 
-const DB_PATH = '/tmp/evoagent-real-demo.db';
+const DB_PATH = '/tmp/autodidact-real-demo.db';
 
 /**
  * Dual-model LLM client: uses one model for chat, another for embeddings.
@@ -64,7 +64,7 @@ const bold = (t: string) => color(t, 1);
 const dim = (t: string) => color(t, 2);
 
 async function main() {
-    console.log('\n' + bold('🧠 EvoAgent Real Model Demo'));
+    console.log('\n' + bold('🧠 Autodidact Real Model Demo'));
     console.log(dim('   Using Ollama qwen2.5:7b + nomic-embed-text\n'));
 
     // Verify Ollama is running

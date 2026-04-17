@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * EvoAgent Demo — shows the self-learning loop in 60 seconds.
+ * Autodidact Demo — shows the self-learning loop in 60 seconds.
  *
  * Usage: npx tsx src/demo.ts
  *
@@ -269,11 +269,11 @@ const bold = (t: string) => color(t, 1);
 const dim = (t: string) => color(t, 2);
 
 async function runDemo() {
-    console.log('\n' + bold('🧠 EvoAgent Demo — Self-Learning AI Agent'));
+    console.log('\n' + bold('🧠 Autodidact Demo — Self-Learning AI Agent'));
     console.log(dim('   Watch the agent learn in real-time. No API keys needed.\n'));
 
     // Clean up any previous demo DB
-    const dbPath = '/tmp/evoagent-demo.db';
+    const dbPath = '/tmp/autodidact-demo.db';
     if (fs.existsSync(dbPath)) fs.unlinkSync(dbPath);
 
     const logger = createSilentLogger();

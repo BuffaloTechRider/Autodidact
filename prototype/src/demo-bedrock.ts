@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * EvoAgent Bedrock Demo — local Ollama + AWS Bedrock cloud escalation.
+ * Autodidact Bedrock Demo — local Ollama + AWS Bedrock cloud escalation.
  *
  * Uses:
  *   - Local: Ollama qwen2.5:7b (chat) + nomic-embed-text (embeddings)
@@ -31,7 +31,7 @@ import type { ChatMessage, ChatOptions, ChatResponse, ILLMClient } from './types
 import { defaultLogger } from './utils/logger.js';
 import * as fs from 'node:fs';
 
-const BEDROCK_DB = '/tmp/evoagent-bedrock-demo.db';
+const BEDROCK_DB = '/tmp/autodidact-bedrock-demo.db';
 
 class DualModelClient implements ILLMClient {
     private chat_: LLMClient;
@@ -71,7 +71,7 @@ const QUERIES_REPHRASED = [
 ];
 
 async function main() {
-    console.log('\n' + bold('🧠 EvoAgent — Local Ollama + AWS Bedrock Demo'));
+    console.log('\n' + bold('🧠 Autodidact — Local Ollama + AWS Bedrock Demo'));
     console.log(dim('   Local: qwen2.5:7b | Cloud: Bedrock Claude | Embeddings: nomic-embed-text\n'));
 
     // Verify Ollama

@@ -9,7 +9,7 @@ import type { AutodidactConfig } from './types.js';
 
 function loadConfig(): Partial<AutodidactConfig> {
     // Try loading from config file
-    const configPath = resolve('evoagent.config.json');
+    const configPath = resolve('autodidact.config.json');
     let fileConfig: Partial<AutodidactConfig> = {};
 
     if (existsSync(configPath)) {
@@ -66,7 +66,7 @@ Environment Variables:
   ANTHROPIC_API_KEY     API key for Anthropic endpoints
 
 Config File:
-  evoagent.config.json  (in current directory)
+  autodidact.config.json  (in current directory)
 `.trim());
 }
 

@@ -1,5 +1,5 @@
 {
-    "name": "evoagent",
+    "name": "autodidact",
     "version": "0.1.0",
     "description": "Self-learning, local-first AI agent framework — gets smarter the more you use it",
     "type": "module",
