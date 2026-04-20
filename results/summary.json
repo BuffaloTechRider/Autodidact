@@ -1,0 +1,15 @@
+{
+  "learning_curve": {
+    "final_local_rate": 0.765,
+    "total_escalations": 47
+  },
+  "thompson_calibration": {
+    "thompson": 0.746,
+    "fixed": 0.75,
+    "random": 0.504
+  },
+  "ebbinghaus_decay": {
+    "with_decay_final_precision": 1.0,
+    "without_decay_final_precision": 1.0
+  }
+}

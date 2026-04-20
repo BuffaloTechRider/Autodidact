@@ -1,0 +1,330 @@
+{
+  "benchmark": "ebbinghaus_decay",
+  "n_entries": 500,
+  "n_cycles": 20,
+  "frequently_accessed_count": 169,
+  "results_with_decay": [
+    {
+      "cycle": 0,
+      "elapsed_hours": 2.0,
+      "precision": 1.0,
+      "valid_entries": 500,
+      "expired": 0,
+      "promoted": 0
+    },
+    {
+      "cycle": 1,
+      "elapsed_hours": 4.0,
+      "precision": 1.0,
+      "valid_entries": 500,
+      "expired": 0,
+      "promoted": 0
+    },
+    {
+      "cycle": 2,
+      "elapsed_hours": 6.0,
+      "precision": 1.0,
+      "valid_entries": 500,
+      "expired": 0,
+      "promoted": 0
+    },
+    {
+      "cycle": 3,
+      "elapsed_hours": 8.0,
+      "precision": 1.0,
+      "valid_entries": 331,
+      "expired": 169,
+      "promoted": 0
+    },
+    {
+      "cycle": 4,
+      "elapsed_hours": 10.0,
+      "precision": 1.0,
+      "valid_entries": 331,
+      "expired": 0,
+      "promoted": 0
+    },
+    {
+      "cycle": 5,
+      "elapsed_hours": 12.0,
+      "precision": 1.0,
+      "valid_entries": 331,
+      "expired": 0,
+      "promoted": 0
+    },
+    {
+      "cycle": 6,
+      "elapsed_hours": 14.0,
+      "precision": 1.0,
+      "valid_entries": 331,
+      "expired": 0,
+      "promoted": 0
+    },
+    {
+      "cycle": 7,
+      "elapsed_hours": 16.0,
+      "precision": 1.0,
+      "valid_entries": 331,
+      "expired": 0,
+      "promoted": 0
+    },
+    {
+      "cycle": 8,
+      "elapsed_hours": 18.0,
+      "precision": 1.0,
+      "valid_entries": 331,
+      "expired": 0,
+      "promoted": 0
+    },
+    {
+      "cycle": 9,
+      "elapsed_hours": 20.0,
+      "precision": 1.0,
+      "valid_entries": 331,
+      "expired": 0,
+      "promoted": 0
+    },
+    {
+      "cycle": 10,
+      "elapsed_hours": 22.0,
+      "precision": 1.0,
+      "valid_entries": 331,
+      "expired": 0,
+      "promoted": 0
+    },
+    {
+      "cycle": 11,
+      "elapsed_hours": 24.0,
+      "precision": 1.0,
+      "valid_entries": 331,
+      "expired": 0,
+      "promoted": 0
+    },
+    {
+      "cycle": 12,
+      "elapsed_hours": 26.0,
+      "precision": 1.0,
+      "valid_entries": 331,
+      "expired": 0,
+      "promoted": 0
+    },
+    {
+      "cycle": 13,
+      "elapsed_hours": 28.0,
+      "precision": 1.0,
+      "valid_entries": 331,
+      "expired": 0,
+      "promoted": 0
+    },
+    {
+      "cycle": 14,
+      "elapsed_hours": 30.0,
+      "precision": 1.0,
+      "valid_entries": 331,
+      "expired": 0,
+      "promoted": 0
+    },
+    {
+      "cycle": 15,
+      "elapsed_hours": 32.0,
+      "precision": 1.0,
+      "valid_entries": 331,
+      "expired": 0,
+      "promoted": 0
+    },
+    {
+      "cycle": 16,
+      "elapsed_hours": 34.0,
+      "precision": 1.0,
+      "valid_entries": 331,
+      "expired": 0,
+      "promoted": 0
+    },
+    {
+      "cycle": 17,
+      "elapsed_hours": 36.0,
+      "precision": 1.0,
+      "valid_entries": 331,
+      "expired": 0,
+      "promoted": 0
+    },
+    {
+      "cycle": 18,
+      "elapsed_hours": 38.0,
+      "precision": 1.0,
+      "valid_entries": 331,
+      "expired": 0,
+      "promoted": 0
+    },
+    {
+      "cycle": 19,
+      "elapsed_hours": 40.0,
+      "precision": 1.0,
+      "valid_entries": 331,
+      "expired": 0,
+      "promoted": 0
+    }
+  ],
+  "results_without_decay": [
+    {
+      "cycle": 0,
+      "elapsed_hours": 2.0,
+      "precision": 1.0,
+      "valid_entries": 500,
+      "expired": 0,
+      "promoted": 0
+    },
+    {
+      "cycle": 1,
+      "elapsed_hours": 4.0,
+      "precision": 1.0,
+      "valid_entries": 500,
+      "expired": 0,
+      "promoted": 0
+    },
+    {
+      "cycle": 2,
+      "elapsed_hours": 6.0,
+      "precision": 1.0,
+      "valid_entries": 500,
+      "expired": 0,
+      "promoted": 0
+    },
+    {
+      "cycle": 3,
+      "elapsed_hours": 8.0,
+      "precision": 1.0,
+      "valid_entries": 500,
+      "expired": 0,
+      "promoted": 0
+    },
+    {
+      "cycle": 4,
+      "elapsed_hours": 10.0,
+      "precision": 1.0,
+      "valid_entries": 500,
+      "expired": 0,
+      "promoted": 0
+    },
+    {
+      "cycle": 5,
+      "elapsed_hours": 12.0,
+      "precision": 1.0,
+      "valid_entries": 500,
+      "expired": 0,
+      "promoted": 0
+    },
+    {
+      "cycle": 6,
+      "elapsed_hours": 14.0,
+      "precision": 1.0,
+      "valid_entries": 500,
+      "expired": 0,
+      "promoted": 0
+    },
+    {
+      "cycle": 7,
+      "elapsed_hours": 16.0,
+      "precision": 1.0,
+      "valid_entries": 500,
+      "expired": 0,
+      "promoted": 0
+    },
+    {
+      "cycle": 8,
+      "elapsed_hours": 18.0,
+      "precision": 1.0,
+      "valid_entries": 500,
+      "expired": 0,
+      "promoted": 0
+    },
+    {
+      "cycle": 9,
+      "elapsed_hours": 20.0,
+      "precision": 1.0,
+      "valid_entries": 500,
+      "expired": 0,
+      "promoted": 0
+    },
+    {
+      "cycle": 10,
+      "elapsed_hours": 22.0,
+      "precision": 1.0,
+      "valid_entries": 500,
+      "expired": 0,
+      "promoted": 0
+    },
+    {
+      "cycle": 11,
+      "elapsed_hours": 24.0,
+      "precision": 1.0,
+      "valid_entries": 500,
+      "expired": 0,
+      "promoted": 0
+    },
+    {
+      "cycle": 12,
+      "elapsed_hours": 26.0,
+      "precision": 1.0,
+      "valid_entries": 500,
+      "expired": 0,
+      "promoted": 0
+    },
+    {
+      "cycle": 13,
+      "elapsed_hours": 28.0,
+      "precision": 1.0,
+      "valid_entries": 500,
+      "expired": 0,
+      "promoted": 0
+    },
+    {
+      "cycle": 14,
+      "elapsed_hours": 30.0,
+      "precision": 1.0,
+      "valid_entries": 500,
+      "expired": 0,
+      "promoted": 0
+    },
+    {
+      "cycle": 15,
+      "elapsed_hours": 32.0,
+      "precision": 1.0,
+      "valid_entries": 500,
+      "expired": 0,
+      "promoted": 0
+    },
+    {
+      "cycle": 16,
+      "elapsed_hours": 34.0,
+      "precision": 1.0,
+      "valid_entries": 500,
+      "expired": 0,
+      "promoted": 0
+    },
+    {
+      "cycle": 17,
+      "elapsed_hours": 36.0,
+      "precision": 1.0,
+      "valid_entries": 500,
+      "expired": 0,
+      "promoted": 0
+    },
+    {
+      "cycle": 18,
+      "elapsed_hours": 38.0,
+      "precision": 1.0,
+      "valid_entries": 500,
+      "expired": 0,
+      "promoted": 0
+    },
+    {
+      "cycle": 19,
+      "elapsed_hours": 40.0,
+      "precision": 1.0,
+      "valid_entries": 500,
+      "expired": 0,
+      "promoted": 0
+    }
+  ]
+}

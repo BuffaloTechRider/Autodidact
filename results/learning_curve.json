@@ -1,0 +1,1409 @@
+{
+  "benchmark": "learning_curve",
+  "n_queries": 200,
+  "final_local_rate": 0.765,
+  "total_escalations": 47,
+  "final_knowledge_count": 47,
+  "results": [
+    {
+      "query_index": 0,
+      "local_resolution_rate": 0.0,
+      "total_escalations": 1,
+      "knowledge_count": 1,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 1,
+      "local_resolution_rate": 0.0,
+      "total_escalations": 2,
+      "knowledge_count": 2,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 2,
+      "local_resolution_rate": 0.0,
+      "total_escalations": 3,
+      "knowledge_count": 3,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 3,
+      "local_resolution_rate": 0.0,
+      "total_escalations": 4,
+      "knowledge_count": 4,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 4,
+      "local_resolution_rate": 0.0,
+      "total_escalations": 5,
+      "knowledge_count": 5,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 5,
+      "local_resolution_rate": 0.0,
+      "total_escalations": 6,
+      "knowledge_count": 6,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 6,
+      "local_resolution_rate": 0.1429,
+      "total_escalations": 6,
+      "knowledge_count": 6,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 7,
+      "local_resolution_rate": 0.125,
+      "total_escalations": 7,
+      "knowledge_count": 7,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 8,
+      "local_resolution_rate": 0.2222,
+      "total_escalations": 7,
+      "knowledge_count": 7,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 9,
+      "local_resolution_rate": 0.2,
+      "total_escalations": 8,
+      "knowledge_count": 8,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 10,
+      "local_resolution_rate": 0.2727,
+      "total_escalations": 8,
+      "knowledge_count": 8,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 11,
+      "local_resolution_rate": 0.3333,
+      "total_escalations": 8,
+      "knowledge_count": 8,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 12,
+      "local_resolution_rate": 0.3846,
+      "total_escalations": 8,
+      "knowledge_count": 8,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 13,
+      "local_resolution_rate": 0.4286,
+      "total_escalations": 8,
+      "knowledge_count": 8,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 14,
+      "local_resolution_rate": 0.4,
+      "total_escalations": 9,
+      "knowledge_count": 9,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 15,
+      "local_resolution_rate": 0.4375,
+      "total_escalations": 9,
+      "knowledge_count": 9,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 16,
+      "local_resolution_rate": 0.4706,
+      "total_escalations": 9,
+      "knowledge_count": 9,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 17,
+      "local_resolution_rate": 0.5,
+      "total_escalations": 9,
+      "knowledge_count": 9,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 18,
+      "local_resolution_rate": 0.5263,
+      "total_escalations": 9,
+      "knowledge_count": 9,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 19,
+      "local_resolution_rate": 0.55,
+      "total_escalations": 9,
+      "knowledge_count": 9,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 20,
+      "local_resolution_rate": 0.5714,
+      "total_escalations": 9,
+      "knowledge_count": 9,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 21,
+      "local_resolution_rate": 0.5909,
+      "total_escalations": 9,
+      "knowledge_count": 9,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 22,
+      "local_resolution_rate": 0.6087,
+      "total_escalations": 9,
+      "knowledge_count": 9,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 23,
+      "local_resolution_rate": 0.625,
+      "total_escalations": 9,
+      "knowledge_count": 9,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 24,
+      "local_resolution_rate": 0.64,
+      "total_escalations": 9,
+      "knowledge_count": 9,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 25,
+      "local_resolution_rate": 0.6538,
+      "total_escalations": 9,
+      "knowledge_count": 9,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 26,
+      "local_resolution_rate": 0.6667,
+      "total_escalations": 9,
+      "knowledge_count": 9,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 27,
+      "local_resolution_rate": 0.6429,
+      "total_escalations": 10,
+      "knowledge_count": 10,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 28,
+      "local_resolution_rate": 0.6552,
+      "total_escalations": 10,
+      "knowledge_count": 10,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 29,
+      "local_resolution_rate": 0.6333,
+      "total_escalations": 11,
+      "knowledge_count": 11,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 30,
+      "local_resolution_rate": 0.6452,
+      "total_escalations": 11,
+      "knowledge_count": 11,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 31,
+      "local_resolution_rate": 0.625,
+      "total_escalations": 12,
+      "knowledge_count": 12,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 32,
+      "local_resolution_rate": 0.6364,
+      "total_escalations": 12,
+      "knowledge_count": 12,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 33,
+      "local_resolution_rate": 0.6471,
+      "total_escalations": 12,
+      "knowledge_count": 12,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 34,
+      "local_resolution_rate": 0.6571,
+      "total_escalations": 12,
+      "knowledge_count": 12,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 35,
+      "local_resolution_rate": 0.6389,
+      "total_escalations": 13,
+      "knowledge_count": 13,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 36,
+      "local_resolution_rate": 0.6486,
+      "total_escalations": 13,
+      "knowledge_count": 13,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 37,
+      "local_resolution_rate": 0.6579,
+      "total_escalations": 13,
+      "knowledge_count": 13,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 38,
+      "local_resolution_rate": 0.6667,
+      "total_escalations": 13,
+      "knowledge_count": 13,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 39,
+      "local_resolution_rate": 0.675,
+      "total_escalations": 13,
+      "knowledge_count": 13,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 40,
+      "local_resolution_rate": 0.6829,
+      "total_escalations": 13,
+      "knowledge_count": 13,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 41,
+      "local_resolution_rate": 0.6905,
+      "total_escalations": 13,
+      "knowledge_count": 13,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 42,
+      "local_resolution_rate": 0.6977,
+      "total_escalations": 13,
+      "knowledge_count": 13,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 43,
+      "local_resolution_rate": 0.7045,
+      "total_escalations": 13,
+      "knowledge_count": 13,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 44,
+      "local_resolution_rate": 0.6889,
+      "total_escalations": 14,
+      "knowledge_count": 14,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 45,
+      "local_resolution_rate": 0.6957,
+      "total_escalations": 14,
+      "knowledge_count": 14,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 46,
+      "local_resolution_rate": 0.7021,
+      "total_escalations": 14,
+      "knowledge_count": 14,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 47,
+      "local_resolution_rate": 0.7083,
+      "total_escalations": 14,
+      "knowledge_count": 14,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 48,
+      "local_resolution_rate": 0.7143,
+      "total_escalations": 14,
+      "knowledge_count": 14,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 49,
+      "local_resolution_rate": 0.7,
+      "total_escalations": 15,
+      "knowledge_count": 15,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 50,
+      "local_resolution_rate": 0.7059,
+      "total_escalations": 15,
+      "knowledge_count": 15,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 51,
+      "local_resolution_rate": 0.7115,
+      "total_escalations": 15,
+      "knowledge_count": 15,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 52,
+      "local_resolution_rate": 0.717,
+      "total_escalations": 15,
+      "knowledge_count": 15,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 53,
+      "local_resolution_rate": 0.7222,
+      "total_escalations": 15,
+      "knowledge_count": 15,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 54,
+      "local_resolution_rate": 0.7273,
+      "total_escalations": 15,
+      "knowledge_count": 15,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 55,
+      "local_resolution_rate": 0.7143,
+      "total_escalations": 16,
+      "knowledge_count": 16,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 56,
+      "local_resolution_rate": 0.7193,
+      "total_escalations": 16,
+      "knowledge_count": 16,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 57,
+      "local_resolution_rate": 0.7241,
+      "total_escalations": 16,
+      "knowledge_count": 16,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 58,
+      "local_resolution_rate": 0.7119,
+      "total_escalations": 17,
+      "knowledge_count": 17,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 59,
+      "local_resolution_rate": 0.7167,
+      "total_escalations": 17,
+      "knowledge_count": 17,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 60,
+      "local_resolution_rate": 0.7213,
+      "total_escalations": 17,
+      "knowledge_count": 17,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 61,
+      "local_resolution_rate": 0.7097,
+      "total_escalations": 18,
+      "knowledge_count": 18,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 62,
+      "local_resolution_rate": 0.6984,
+      "total_escalations": 19,
+      "knowledge_count": 19,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 63,
+      "local_resolution_rate": 0.7031,
+      "total_escalations": 19,
+      "knowledge_count": 19,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 64,
+      "local_resolution_rate": 0.6923,
+      "total_escalations": 20,
+      "knowledge_count": 20,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 65,
+      "local_resolution_rate": 0.6818,
+      "total_escalations": 21,
+      "knowledge_count": 21,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 66,
+      "local_resolution_rate": 0.6866,
+      "total_escalations": 21,
+      "knowledge_count": 21,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 67,
+      "local_resolution_rate": 0.6912,
+      "total_escalations": 21,
+      "knowledge_count": 21,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 68,
+      "local_resolution_rate": 0.6957,
+      "total_escalations": 21,
+      "knowledge_count": 21,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 69,
+      "local_resolution_rate": 0.6857,
+      "total_escalations": 22,
+      "knowledge_count": 22,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 70,
+      "local_resolution_rate": 0.6901,
+      "total_escalations": 22,
+      "knowledge_count": 22,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 71,
+      "local_resolution_rate": 0.6944,
+      "total_escalations": 22,
+      "knowledge_count": 22,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 72,
+      "local_resolution_rate": 0.6986,
+      "total_escalations": 22,
+      "knowledge_count": 22,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 73,
+      "local_resolution_rate": 0.7027,
+      "total_escalations": 22,
+      "knowledge_count": 22,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 74,
+      "local_resolution_rate": 0.7067,
+      "total_escalations": 22,
+      "knowledge_count": 22,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 75,
+      "local_resolution_rate": 0.7105,
+      "total_escalations": 22,
+      "knowledge_count": 22,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 76,
+      "local_resolution_rate": 0.7143,
+      "total_escalations": 22,
+      "knowledge_count": 22,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 77,
+      "local_resolution_rate": 0.7051,
+      "total_escalations": 23,
+      "knowledge_count": 23,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 78,
+      "local_resolution_rate": 0.7089,
+      "total_escalations": 23,
+      "knowledge_count": 23,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 79,
+      "local_resolution_rate": 0.7125,
+      "total_escalations": 23,
+      "knowledge_count": 23,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 80,
+      "local_resolution_rate": 0.716,
+      "total_escalations": 23,
+      "knowledge_count": 23,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 81,
+      "local_resolution_rate": 0.7195,
+      "total_escalations": 23,
+      "knowledge_count": 23,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 82,
+      "local_resolution_rate": 0.7229,
+      "total_escalations": 23,
+      "knowledge_count": 23,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 83,
+      "local_resolution_rate": 0.7143,
+      "total_escalations": 24,
+      "knowledge_count": 24,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 84,
+      "local_resolution_rate": 0.7176,
+      "total_escalations": 24,
+      "knowledge_count": 24,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 85,
+      "local_resolution_rate": 0.7209,
+      "total_escalations": 24,
+      "knowledge_count": 24,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 86,
+      "local_resolution_rate": 0.7241,
+      "total_escalations": 24,
+      "knowledge_count": 24,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 87,
+      "local_resolution_rate": 0.7273,
+      "total_escalations": 24,
+      "knowledge_count": 24,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 88,
+      "local_resolution_rate": 0.7303,
+      "total_escalations": 24,
+      "knowledge_count": 24,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 89,
+      "local_resolution_rate": 0.7333,
+      "total_escalations": 24,
+      "knowledge_count": 24,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 90,
+      "local_resolution_rate": 0.7363,
+      "total_escalations": 24,
+      "knowledge_count": 24,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 91,
+      "local_resolution_rate": 0.7391,
+      "total_escalations": 24,
+      "knowledge_count": 24,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 92,
+      "local_resolution_rate": 0.7419,
+      "total_escalations": 24,
+      "knowledge_count": 24,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 93,
+      "local_resolution_rate": 0.7447,
+      "total_escalations": 24,
+      "knowledge_count": 24,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 94,
+      "local_resolution_rate": 0.7474,
+      "total_escalations": 24,
+      "knowledge_count": 24,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 95,
+      "local_resolution_rate": 0.7396,
+      "total_escalations": 25,
+      "knowledge_count": 25,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 96,
+      "local_resolution_rate": 0.732,
+      "total_escalations": 26,
+      "knowledge_count": 26,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 97,
+      "local_resolution_rate": 0.7347,
+      "total_escalations": 26,
+      "knowledge_count": 26,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 98,
+      "local_resolution_rate": 0.7374,
+      "total_escalations": 26,
+      "knowledge_count": 26,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 99,
+      "local_resolution_rate": 0.74,
+      "total_escalations": 26,
+      "knowledge_count": 26,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 100,
+      "local_resolution_rate": 0.7426,
+      "total_escalations": 26,
+      "knowledge_count": 26,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 101,
+      "local_resolution_rate": 0.7353,
+      "total_escalations": 27,
+      "knowledge_count": 27,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 102,
+      "local_resolution_rate": 0.7379,
+      "total_escalations": 27,
+      "knowledge_count": 27,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 103,
+      "local_resolution_rate": 0.7404,
+      "total_escalations": 27,
+      "knowledge_count": 27,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 104,
+      "local_resolution_rate": 0.7429,
+      "total_escalations": 27,
+      "knowledge_count": 27,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 105,
+      "local_resolution_rate": 0.7453,
+      "total_escalations": 27,
+      "knowledge_count": 27,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 106,
+      "local_resolution_rate": 0.7477,
+      "total_escalations": 27,
+      "knowledge_count": 27,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 107,
+      "local_resolution_rate": 0.75,
+      "total_escalations": 27,
+      "knowledge_count": 27,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 108,
+      "local_resolution_rate": 0.7523,
+      "total_escalations": 27,
+      "knowledge_count": 27,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 109,
+      "local_resolution_rate": 0.7545,
+      "total_escalations": 27,
+      "knowledge_count": 27,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 110,
+      "local_resolution_rate": 0.7568,
+      "total_escalations": 27,
+      "knowledge_count": 27,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 111,
+      "local_resolution_rate": 0.7589,
+      "total_escalations": 27,
+      "knowledge_count": 27,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 112,
+      "local_resolution_rate": 0.7522,
+      "total_escalations": 28,
+      "knowledge_count": 28,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 113,
+      "local_resolution_rate": 0.7544,
+      "total_escalations": 28,
+      "knowledge_count": 28,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 114,
+      "local_resolution_rate": 0.7565,
+      "total_escalations": 28,
+      "knowledge_count": 28,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 115,
+      "local_resolution_rate": 0.75,
+      "total_escalations": 29,
+      "knowledge_count": 29,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 116,
+      "local_resolution_rate": 0.7521,
+      "total_escalations": 29,
+      "knowledge_count": 29,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 117,
+      "local_resolution_rate": 0.7542,
+      "total_escalations": 29,
+      "knowledge_count": 29,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 118,
+      "local_resolution_rate": 0.7563,
+      "total_escalations": 29,
+      "knowledge_count": 29,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 119,
+      "local_resolution_rate": 0.7583,
+      "total_escalations": 29,
+      "knowledge_count": 29,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 120,
+      "local_resolution_rate": 0.7603,
+      "total_escalations": 29,
+      "knowledge_count": 29,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 121,
+      "local_resolution_rate": 0.7623,
+      "total_escalations": 29,
+      "knowledge_count": 29,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 122,
+      "local_resolution_rate": 0.7642,
+      "total_escalations": 29,
+      "knowledge_count": 29,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 123,
+      "local_resolution_rate": 0.7661,
+      "total_escalations": 29,
+      "knowledge_count": 29,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 124,
+      "local_resolution_rate": 0.76,
+      "total_escalations": 30,
+      "knowledge_count": 30,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 125,
+      "local_resolution_rate": 0.7619,
+      "total_escalations": 30,
+      "knowledge_count": 30,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 126,
+      "local_resolution_rate": 0.7638,
+      "total_escalations": 30,
+      "knowledge_count": 30,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 127,
+      "local_resolution_rate": 0.7656,
+      "total_escalations": 30,
+      "knowledge_count": 30,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 128,
+      "local_resolution_rate": 0.7674,
+      "total_escalations": 30,
+      "knowledge_count": 30,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 129,
+      "local_resolution_rate": 0.7692,
+      "total_escalations": 30,
+      "knowledge_count": 30,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 130,
+      "local_resolution_rate": 0.771,
+      "total_escalations": 30,
+      "knowledge_count": 30,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 131,
+      "local_resolution_rate": 0.7727,
+      "total_escalations": 30,
+      "knowledge_count": 30,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 132,
+      "local_resolution_rate": 0.7744,
+      "total_escalations": 30,
+      "knowledge_count": 30,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 133,
+      "local_resolution_rate": 0.7761,
+      "total_escalations": 30,
+      "knowledge_count": 30,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 134,
+      "local_resolution_rate": 0.7778,
+      "total_escalations": 30,
+      "knowledge_count": 30,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 135,
+      "local_resolution_rate": 0.7794,
+      "total_escalations": 30,
+      "knowledge_count": 30,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 136,
+      "local_resolution_rate": 0.7737,
+      "total_escalations": 31,
+      "knowledge_count": 31,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 137,
+      "local_resolution_rate": 0.7754,
+      "total_escalations": 31,
+      "knowledge_count": 31,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 138,
+      "local_resolution_rate": 0.777,
+      "total_escalations": 31,
+      "knowledge_count": 31,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 139,
+      "local_resolution_rate": 0.7786,
+      "total_escalations": 31,
+      "knowledge_count": 31,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 140,
+      "local_resolution_rate": 0.7801,
+      "total_escalations": 31,
+      "knowledge_count": 31,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 141,
+      "local_resolution_rate": 0.7746,
+      "total_escalations": 32,
+      "knowledge_count": 32,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 142,
+      "local_resolution_rate": 0.7762,
+      "total_escalations": 32,
+      "knowledge_count": 32,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 143,
+      "local_resolution_rate": 0.7778,
+      "total_escalations": 32,
+      "knowledge_count": 32,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 144,
+      "local_resolution_rate": 0.7793,
+      "total_escalations": 32,
+      "knowledge_count": 32,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 145,
+      "local_resolution_rate": 0.7808,
+      "total_escalations": 32,
+      "knowledge_count": 32,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 146,
+      "local_resolution_rate": 0.7823,
+      "total_escalations": 32,
+      "knowledge_count": 32,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 147,
+      "local_resolution_rate": 0.7838,
+      "total_escalations": 32,
+      "knowledge_count": 32,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 148,
+      "local_resolution_rate": 0.7785,
+      "total_escalations": 33,
+      "knowledge_count": 33,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 149,
+      "local_resolution_rate": 0.78,
+      "total_escalations": 33,
+      "knowledge_count": 33,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 150,
+      "local_resolution_rate": 0.7815,
+      "total_escalations": 33,
+      "knowledge_count": 33,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 151,
+      "local_resolution_rate": 0.7829,
+      "total_escalations": 33,
+      "knowledge_count": 33,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 152,
+      "local_resolution_rate": 0.7843,
+      "total_escalations": 33,
+      "knowledge_count": 33,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 153,
+      "local_resolution_rate": 0.7857,
+      "total_escalations": 33,
+      "knowledge_count": 33,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 154,
+      "local_resolution_rate": 0.7871,
+      "total_escalations": 33,
+      "knowledge_count": 33,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 155,
+      "local_resolution_rate": 0.7885,
+      "total_escalations": 33,
+      "knowledge_count": 33,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 156,
+      "local_resolution_rate": 0.7834,
+      "total_escalations": 34,
+      "knowledge_count": 34,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 157,
+      "local_resolution_rate": 0.7848,
+      "total_escalations": 34,
+      "knowledge_count": 34,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 158,
+      "local_resolution_rate": 0.7862,
+      "total_escalations": 34,
+      "knowledge_count": 34,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 159,
+      "local_resolution_rate": 0.7875,
+      "total_escalations": 34,
+      "knowledge_count": 34,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 160,
+      "local_resolution_rate": 0.7826,
+      "total_escalations": 35,
+      "knowledge_count": 35,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 161,
+      "local_resolution_rate": 0.7778,
+      "total_escalations": 36,
+      "knowledge_count": 36,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 162,
+      "local_resolution_rate": 0.7791,
+      "total_escalations": 36,
+      "knowledge_count": 36,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 163,
+      "local_resolution_rate": 0.7805,
+      "total_escalations": 36,
+      "knowledge_count": 36,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 164,
+      "local_resolution_rate": 0.7818,
+      "total_escalations": 36,
+      "knowledge_count": 36,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 165,
+      "local_resolution_rate": 0.7831,
+      "total_escalations": 36,
+      "knowledge_count": 36,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 166,
+      "local_resolution_rate": 0.7844,
+      "total_escalations": 36,
+      "knowledge_count": 36,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 167,
+      "local_resolution_rate": 0.7857,
+      "total_escalations": 36,
+      "knowledge_count": 36,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 168,
+      "local_resolution_rate": 0.7811,
+      "total_escalations": 37,
+      "knowledge_count": 37,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 169,
+      "local_resolution_rate": 0.7765,
+      "total_escalations": 38,
+      "knowledge_count": 38,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 170,
+      "local_resolution_rate": 0.7778,
+      "total_escalations": 38,
+      "knowledge_count": 38,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 171,
+      "local_resolution_rate": 0.7733,
+      "total_escalations": 39,
+      "knowledge_count": 39,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 172,
+      "local_resolution_rate": 0.7688,
+      "total_escalations": 40,
+      "knowledge_count": 40,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 173,
+      "local_resolution_rate": 0.7644,
+      "total_escalations": 41,
+      "knowledge_count": 41,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 174,
+      "local_resolution_rate": 0.7657,
+      "total_escalations": 41,
+      "knowledge_count": 41,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 175,
+      "local_resolution_rate": 0.7614,
+      "total_escalations": 42,
+      "knowledge_count": 42,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 176,
+      "local_resolution_rate": 0.7627,
+      "total_escalations": 42,
+      "knowledge_count": 42,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 177,
+      "local_resolution_rate": 0.7584,
+      "total_escalations": 43,
+      "knowledge_count": 43,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 178,
+      "local_resolution_rate": 0.7542,
+      "total_escalations": 44,
+      "knowledge_count": 44,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 179,
+      "local_resolution_rate": 0.7556,
+      "total_escalations": 44,
+      "knowledge_count": 44,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 180,
+      "local_resolution_rate": 0.7514,
+      "total_escalations": 45,
+      "knowledge_count": 45,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 181,
+      "local_resolution_rate": 0.7527,
+      "total_escalations": 45,
+      "knowledge_count": 45,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 182,
+      "local_resolution_rate": 0.7541,
+      "total_escalations": 45,
+      "knowledge_count": 45,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 183,
+      "local_resolution_rate": 0.7554,
+      "total_escalations": 45,
+      "knowledge_count": 45,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 184,
+      "local_resolution_rate": 0.7514,
+      "total_escalations": 46,
+      "knowledge_count": 46,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 185,
+      "local_resolution_rate": 0.7527,
+      "total_escalations": 46,
+      "knowledge_count": 46,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 186,
+      "local_resolution_rate": 0.754,
+      "total_escalations": 46,
+      "knowledge_count": 46,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 187,
+      "local_resolution_rate": 0.75,
+      "total_escalations": 47,
+      "knowledge_count": 47,
+      "route": "CLOUD"
+    },
+    {
+      "query_index": 188,
+      "local_resolution_rate": 0.7513,
+      "total_escalations": 47,
+      "knowledge_count": 47,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 189,
+      "local_resolution_rate": 0.7526,
+      "total_escalations": 47,
+      "knowledge_count": 47,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 190,
+      "local_resolution_rate": 0.7539,
+      "total_escalations": 47,
+      "knowledge_count": 47,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 191,
+      "local_resolution_rate": 0.7552,
+      "total_escalations": 47,
+      "knowledge_count": 47,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 192,
+      "local_resolution_rate": 0.7565,
+      "total_escalations": 47,
+      "knowledge_count": 47,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 193,
+      "local_resolution_rate": 0.7577,
+      "total_escalations": 47,
+      "knowledge_count": 47,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 194,
+      "local_resolution_rate": 0.759,
+      "total_escalations": 47,
+      "knowledge_count": 47,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 195,
+      "local_resolution_rate": 0.7602,
+      "total_escalations": 47,
+      "knowledge_count": 47,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 196,
+      "local_resolution_rate": 0.7614,
+      "total_escalations": 47,
+      "knowledge_count": 47,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 197,
+      "local_resolution_rate": 0.7626,
+      "total_escalations": 47,
+      "knowledge_count": 47,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 198,
+      "local_resolution_rate": 0.7638,
+      "total_escalations": 47,
+      "knowledge_count": 47,
+      "route": "LOCAL"
+    },
+    {
+      "query_index": 199,
+      "local_resolution_rate": 0.765,
+      "total_escalations": 47,
+      "knowledge_count": 47,
+      "route": "LOCAL"
+    }
+  ]
+}
