@@ -72,7 +72,7 @@ npx vitest --run  # tests
 
 - Python 3.10+
 - Node.js 18+ (for TypeScript SDK)
-- Ollama (for local model testing) — `ollama pull qwen2.5:7b && ollama pull nomic-embed-text`
+- Ollama (for local model testing) — `ollama pull qwen2.5:7b && ollama pull qllama/bge-large-en-v1.5`
 
 ## Code Style
 
