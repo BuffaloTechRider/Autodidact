@@ -1,0 +1,621 @@
+"""Autodidact Agent - the self-learning AI that routes and remembers.
+
+The Agent is the central API. It accepts a user query, decides how to answer
+it (from memory, locally, or via cloud), and learns from every cloud escalation.
+
+Usage:
+    from autodidact import Agent
+
+    agent = Agent(local_model="ollama/qwen2.5:7b", cloud_model="openai/gpt-4o")
+    response = agent.query("What is the capital of France?")
+    print(response.answer)       # "Paris"
+    print(response.routed_to)    # "local"
+    print(response.confidence)   # 0.92
+    print(response.cost_usd)     # 0.0
+
+See CONTEXT.md for precise definitions of routing, escalation, learning, and memory.
+"""
+
+from __future__ import annotations
+
+import logging
+import math
+import time
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Callable, Optional
+
+import numpy as np
+
+from autodidact.database import init_database
+from autodidact.knowledge_store import KnowledgeStore, ScoredKnowledgeEntry
+from autodidact.learning_extractor import ExtractionResult, LearningExtractor
+from autodidact.llm_client import ChatMessage, ChatResponseWithLogprobs, LLMClient, LLMConfig
+from autodidact.types import AutodidactConfig, NewKnowledgeEntry
+
+# Type alias for progress callbacks.
+ProgressCallback = Optional[Callable[[dict], None]]
+
+logger = logging.getLogger(__name__)
+
+# ── Cost rates (USD per million tokens) for savings estimation ─────
+# Subset of the rates from benchmarks/ablation_experiment.py.
+# Users can override via config; these are sensible defaults.
+_DEFAULT_COST_RATES = {
+    "gpt-4o": {"input": 2.5, "output": 10.0},
+    "gpt-4o-mini": {"input": 0.15, "output": 0.60},
+    "gpt-4.1-mini": {"input": 0.40, "output": 1.60},
+    "claude-sonnet-4-5": {"input": 3.0, "output": 15.0},
+    "claude-haiku": {"input": 0.25, "output": 1.25},
+}
+
+# ── Similarity thresholds for memory retrieval tiers ───────────────
+MEMORY_DIRECT_THRESHOLD = 0.85   # return stored answer directly
+MEMORY_CONTEXT_THRESHOLD = 0.60  # inject as reference context
+MEMORY_STALENESS_DAYS = 7        # re-verify entries older than this
+
+
+# ── Response model ─────────────────────────────────────────────────
+
+@dataclass
+class QueryResponse:
+    """Result of an agent.query() call."""
+
+    answer: str
+    routed_to: str  # "local", "cloud", or "memory"
+    confidence: float  # 0.0-1.0; for memory answers, similarity score
+    cost_usd: float
+    learned: bool  # True if a new KB entry was stored
+    latency_ms: int
+    memory_source: Optional[str] = None  # the past question it recalled, if any
+    memory_age_days: Optional[float] = None  # how old the memory entry is
+    stale: bool = False  # True if memory answer is older than staleness threshold
+
+
+@dataclass
+class SavingsReport:
+    """Cumulative cost savings statistics."""
+
+    total_queries: int = 0
+    local_queries: int = 0
+    cloud_queries: int = 0
+    memory_queries: int = 0
+    total_cost_usd: float = 0.0
+    estimated_all_cloud_cost_usd: float = 0.0
+    saved_usd: float = 0.0
+    saved_pct: float = 0.0
+    facts_learned: int = 0
+
+
+# ── Agent ──────────────────────────────────────────────────────────
+
+class Agent:
+    """The self-learning AI agent.
+
+    Accepts queries, routes between local and cloud models based on confidence,
+    and learns from every cloud escalation by storing Q&A pairs in a knowledge
+    store for future retrieval.
+    """
+
+    def __init__(
+        self,
+        local_model: Optional[str] = None,
+        cloud_model: Optional[str] = None,
+        *,
+        cloud_provider: str = "openai",
+        cloud_base_url: Optional[str] = None,
+        cloud_api_key_env: Optional[str] = None,
+        cloud_region: str = "us-west-2",
+        embedding_model: Optional[str] = None,
+        db_path: str = "~/.autodidact/memory.db",
+        confidence_threshold: float = 0.7,
+        staleness_days: float = MEMORY_STALENESS_DAYS,
+    ) -> None:
+        self.confidence_threshold = confidence_threshold
+        self.staleness_days = staleness_days
+
+        # Expand ~ in db_path and ensure parent dir exists.
+        self._db_path = str(Path(db_path).expanduser())
+        Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
+
+        # Initialize database and knowledge store.
+        self._conn = init_database(self._db_path)
+        self._config = AutodidactConfig(db_path=self._db_path)
+        self.memory = KnowledgeStore(self._conn, self._config)
+
+        # Local model client (Ollama).
+        self._local_client: Optional[LLMClient] = None
+        self._local_model_name = local_model
+        if local_model:
+            # Parse "ollama/qwen2.5:7b" → provider="ollama", model="qwen2.5:7b"
+            provider, model = _parse_model_string(local_model, default_provider="ollama")
+            emb_model = embedding_model or "qllama/bge-large-en-v1.5"
+            # Strip provider prefix from embedding model if present.
+            if "/" in emb_model and not emb_model.startswith("http"):
+                _, emb_model = emb_model.split("/", 1)
+            self._local_client = LLMClient(LLMConfig(
+                provider=provider,
+                model=model,
+                embedding_model=emb_model,
+            ))
+
+        # Cloud model client.
+        self._cloud_client: Optional[LLMClient] = None
+        self._cloud_model_name = cloud_model
+        if cloud_model:
+            provider, model = _parse_model_string(cloud_model, default_provider=cloud_provider)
+            config_kwargs: dict = {"provider": provider, "model": model}
+            if provider == "openai":
+                config_kwargs["base_url"] = cloud_base_url or "https://api.openai.com/v1"
+                config_kwargs["api_key_env"] = cloud_api_key_env or "OPENAI_API_KEY"
+            elif provider == "bedrock":
+                config_kwargs["region"] = cloud_region
+            self._cloud_client = LLMClient(LLMConfig(**config_kwargs))
+
+        # Embedding client — reuse local client if available, else cloud.
+        self._embed_client = self._local_client or self._cloud_client
+
+        # Session stats.
+        self._session_stats = SavingsReport()
+
+        # Conversation history (in-session only).
+        self._history: list[dict] = []  # [{"role": "user"/"assistant", "content": "..."}]
+
+    # ── Public API ────────────────────────────────────────────────
+
+    def query(
+        self,
+        question: str,
+        context: Optional[str] = None,
+        *,
+        on_progress: ProgressCallback = None,
+    ) -> QueryResponse:
+        """Ask the agent a question. It thinks, routes, and learns.
+
+        Parameters
+        ----------
+        question
+            The user's question.
+        context
+            Optional external context (e.g., from a RAG pipeline). Injected
+            into the prompt alongside any memory context the agent retrieves.
+        on_progress
+            Optional callback for real-time UI updates. Called with a dict
+            containing at minimum a "type" key. Event types:
+            - thinking: memory search started, includes memory_hits count
+            - memory_hit: answering from memory (high similarity)
+            - local_done: local model answered, includes confidence
+            - cloud_call: escalating to cloud, includes model name
+            - cloud_done: cloud response received, includes cost and model
+            - learning: knowledge stored, includes knowledge_count
+        """
+        started = time.perf_counter()
+
+        def _emit(event: dict) -> None:
+            if on_progress is not None:
+                on_progress(event)
+
+        # ── Stage 1: Check memory ────────────────────────────────
+        memory_hits = self._check_memory(question)
+        best_hit = memory_hits[0] if memory_hits else None
+
+        _emit({
+            "type": "thinking",
+            "memory_hits": len(memory_hits),
+            "best_similarity": best_hit.score if best_hit else 0.0,
+        })
+
+        if best_hit and best_hit.score >= MEMORY_DIRECT_THRESHOLD:
+            # Direct memory answer — no generation needed.
+            entry = best_hit.entry
+            self.memory.access(entry.id)
+            age_days = self._entry_age_days(entry)
+            is_stale = age_days > self.staleness_days
+
+            if is_stale and self._cloud_client:
+                # Re-verify stale memory with cloud.
+                logger.info("Memory hit is stale (%.1f days old); re-verifying with cloud", age_days)
+                return self._escalate_to_cloud(question, context, memory_hits, started, _emit)
+
+            _emit({
+                "type": "memory_hit",
+                "similarity": best_hit.score,
+                "memory_source": entry.question,
+                "age_days": age_days,
+            })
+
+            latency = _elapsed_ms(started)
+            self._record_query("memory", 0.0, best_hit.score, latency, question=question)
+            self._append_history(question, entry.content)
+            return QueryResponse(
+                answer=entry.content,
+                routed_to="memory",
+                confidence=best_hit.score,
+                cost_usd=0.0,
+                learned=False,
+                latency_ms=latency,
+                memory_source=entry.question,
+                memory_age_days=age_days,
+                stale=False,
+            )
+
+        # ── Stage 2: Generate locally ────────────────────────────
+        if self._local_client is None:
+            # No local model — go straight to cloud.
+            if self._cloud_client is None:
+                return QueryResponse(
+                    answer="No model configured. Run `autodidact init` to set up.",
+                    routed_to="local", confidence=0.0, cost_usd=0.0,
+                    learned=False, latency_ms=_elapsed_ms(started),
+                )
+            return self._escalate_to_cloud(question, context, memory_hits, started, _emit)
+
+        messages = self._build_messages(question, context, memory_hits)
+        local_resp = self._local_client.chat_with_logprobs(
+            messages, max_tokens=1024, temperature=0.0, top_logprobs=1,
+        )
+        confidence = self._compute_confidence(local_resp)
+
+        if confidence >= self.confidence_threshold:
+            # Local is confident — return its answer.
+            _emit({"type": "local_done", "confidence": confidence})
+            latency = _elapsed_ms(started)
+            cost = 0.0
+            self._record_query("local", cost, confidence, latency, question=question)
+            self._append_history(question, local_resp.content)
+            return QueryResponse(
+                answer=local_resp.content,
+                routed_to="local",
+                confidence=confidence,
+                cost_usd=cost,
+                learned=False,
+                latency_ms=latency,
+            )
+
+        # ── Stage 3: Escalate to cloud ───────────────────────────
+        if self._cloud_client is None:
+            # No cloud model — return local answer anyway with low confidence.
+            _emit({"type": "local_done", "confidence": confidence})
+            latency = _elapsed_ms(started)
+            self._record_query("local", 0.0, confidence, latency, question=question)
+            self._append_history(question, local_resp.content)
+            return QueryResponse(
+                answer=local_resp.content,
+                routed_to="local",
+                confidence=confidence,
+                cost_usd=0.0,
+                learned=False,
+                latency_ms=latency,
+            )
+
+        return self._escalate_to_cloud(question, context, memory_hits, started, _emit)
+
+    def correct(self, question: str) -> QueryResponse:
+        """User says the last answer was wrong. Re-escalate to cloud and learn.
+
+        Invalidates any matching memory entry and forces a fresh cloud answer.
+        """
+        started = time.perf_counter()
+        # Invalidate the closest memory entry for this question.
+        if self._embed_client:
+            q_emb = self._embed_client.embed(question)
+            hits = self.memory.search(q_emb, limit=1, min_similarity=0.80)
+            for h in hits:
+                self.memory.invalidate(h.entry.id)
+                logger.info("Invalidated memory entry %s for correction", h.entry.id)
+
+        if self._cloud_client is None:
+            return QueryResponse(
+                answer="No cloud model configured — cannot re-verify.",
+                routed_to="local", confidence=0.0, cost_usd=0.0,
+                learned=False, latency_ms=_elapsed_ms(started),
+            )
+
+        return self._escalate_to_cloud(question, None, [], started)
+
+    def savings(self) -> SavingsReport:
+        """Return cumulative cost savings across all sessions (R6 AC2).
+
+        Reads from the query_log table for totals that survive across sessions,
+        and counts facts_learned from knowledge_entries.
+        """
+        row = self._conn.execute(
+            "SELECT "
+            "  COUNT(*) AS total, "
+            "  SUM(CASE WHEN routing_decision = 'local' THEN 1 ELSE 0 END) AS local_n, "
+            "  SUM(CASE WHEN routing_decision = 'cloud' THEN 1 ELSE 0 END) AS cloud_n, "
+            "  SUM(CASE WHEN routing_decision = 'memory' THEN 1 ELSE 0 END) AS memory_n, "
+            "  COALESCE(SUM(cost), 0.0) AS total_cost "
+            "FROM query_log"
+        ).fetchone()
+
+        total = row["total"]
+        total_cost = row["total_cost"]
+        # Estimate: every query would cost at least $0.003 if sent to cloud.
+        all_cloud_est = total * 0.003
+        # For cloud queries, use actual cost if it's higher than the minimum.
+        cloud_actual_row = self._conn.execute(
+            "SELECT COALESCE(SUM(CASE WHEN cost > 0.003 THEN cost ELSE 0.003 END), 0.0) AS est "
+            "FROM query_log"
+        ).fetchone()
+        all_cloud_est = cloud_actual_row["est"] if total > 0 else 0.0
+
+        saved = all_cloud_est - total_cost
+        saved_pct = (saved / all_cloud_est * 100) if all_cloud_est > 0 else 0.0
+
+        # Count facts learned from knowledge store.
+        facts_row = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM knowledge_entries WHERE source = 'cloud_escalation'"
+        ).fetchone()
+        facts_learned = facts_row["n"]
+
+        return SavingsReport(
+            total_queries=total,
+            local_queries=row["local_n"],
+            cloud_queries=row["cloud_n"],
+            memory_queries=row["memory_n"],
+            total_cost_usd=total_cost,
+            estimated_all_cloud_cost_usd=all_cloud_est,
+            saved_usd=saved,
+            saved_pct=saved_pct,
+            facts_learned=facts_learned,
+        )
+
+    # ── Internal ──────────────────────────────────────────────────
+
+    def _check_memory(self, question: str) -> list[ScoredKnowledgeEntry]:
+        """Search the knowledge store for similar past Q&A."""
+        if self._embed_client is None:
+            return []
+        try:
+            q_emb = self._embed_client.embed(question)
+            return self.memory.search(q_emb, limit=5, min_similarity=0.0)
+        except Exception as e:
+            logger.warning("Memory search failed: %s", e)
+            return []
+
+    def _escalate_to_cloud(
+        self,
+        question: str,
+        context: Optional[str],
+        memory_hits: list[ScoredKnowledgeEntry],
+        started: float,
+        emit: Callable[[dict], None] = lambda e: None,
+    ) -> QueryResponse:
+        """Send to cloud, learn from the answer."""
+        assert self._cloud_client is not None
+
+        emit({"type": "cloud_call", "model": self._cloud_model_name or "unknown"})
+
+        messages = self._build_messages(question, context, memory_hits)
+        cloud_resp = self._cloud_client.chat(messages, max_tokens=1024, temperature=0.0)
+        cost = self._estimate_cost(cloud_resp.input_tokens, cloud_resp.output_tokens)
+
+        emit({
+            "type": "cloud_done",
+            "model": self._cloud_model_name or "unknown",
+            "cost": cost,
+            "latency_ms": cloud_resp.latency_ms,
+        })
+
+        # Learn from escalation.
+        learned, knowledge_count = self._learn(question, cloud_resp.content)
+
+        if learned:
+            emit({"type": "learning", "knowledge_count": knowledge_count})
+
+        latency = _elapsed_ms(started)
+        self._record_query("cloud", cost, 0.0, latency, learned=learned, question=question)
+        self._append_history(question, cloud_resp.content)
+        return QueryResponse(
+            answer=cloud_resp.content,
+            routed_to="cloud",
+            confidence=0.0,  # we escalated because confidence was low
+            cost_usd=cost,
+            learned=learned,
+            latency_ms=latency,
+        )
+
+    def _learn(self, question: str, answer: str) -> tuple[bool, int]:
+        """Store knowledge from a cloud escalation. Returns (learned, count).
+
+        Uses the LearningExtractor to extract structured knowledge entries
+        from the cloud response. Falls back to storing the raw Q&A pair.
+        """
+        if self._embed_client is None:
+            return False, 0
+        try:
+            # Extract structured knowledge via local LLM (if available).
+            extractor_client = self._local_client or self._cloud_client
+            if extractor_client:
+                extractor = LearningExtractor(extractor_client)
+                extraction = extractor.extract(question, answer)
+            else:
+                # No LLM for extraction — raw fallback.
+                extraction = ExtractionResult(
+                    knowledge=[NewKnowledgeEntry(
+                        content=answer[:500],
+                        source="cloud_escalation",
+                        confidence=0.9,
+                        domain="general",
+                        topic="learned",
+                        metadata={"extracted_from": question[:200]},
+                    )],
+                    skills=[],
+                )
+
+            # Deduplication: check if a very similar question already exists.
+            q_emb = self._embed_client.embed(question)
+            existing = self.memory.search(q_emb, limit=1, min_similarity=0.95)
+            if existing:
+                old = existing[0].entry
+                self.memory.invalidate(old.id)
+                logger.debug("Deduplicated: replacing entry %s with updated answer", old.id)
+
+            # Store each extracted knowledge entry.
+            stored_count = 0
+            for entry in extraction.knowledge:
+                try:
+                    content_emb = self._embed_client.embed(entry.content)
+                    # Use the question embedding for the question field,
+                    # and the content embedding for the answer embedding.
+                    entry.question = question
+                    entry.embedding = q_emb.tolist()
+                    entry.answer_embedding = content_emb.tolist()
+                    entry.verbatim_response = answer if stored_count == 0 else None
+                    self.memory.insert(entry)
+                    stored_count += 1
+                except Exception as e:
+                    logger.warning("Failed to store extracted entry: %s", e)
+
+            if stored_count > 0:
+                self._session_stats.facts_learned += stored_count
+                return True, stored_count
+
+            return False, 0
+        except Exception as e:
+            logger.warning("Failed to learn from escalation: %s", e)
+            return False, 0
+
+    def _build_messages(
+        self,
+        question: str,
+        context: Optional[str],
+        memory_hits: list[ScoredKnowledgeEntry],
+    ) -> list[ChatMessage]:
+        """Build the prompt with all available context."""
+        parts: list[str] = []
+
+        # System message.
+        parts.append("You are a helpful assistant. Answer the user's question accurately and concisely.")
+
+        # Memory context (from agent's learned knowledge).
+        memory_context = self._format_memory_context(memory_hits)
+        if memory_context:
+            parts.append(f"\n{memory_context}")
+
+        # External context (from user's RAG pipeline or document store).
+        if context:
+            parts.append(f"\nRelevant documents:\n{context}")
+
+        system = "\n".join(parts)
+        messages = [ChatMessage(role="system", content=system)]
+
+        # Conversation history.
+        for turn in self._history[-10:]:  # last 10 turns
+            messages.append(ChatMessage(role=turn["role"], content=turn["content"]))
+
+        # Current question.
+        messages.append(ChatMessage(role="user", content=question))
+        return messages
+
+    def _format_memory_context(self, hits: list[ScoredKnowledgeEntry]) -> str:
+        """Format memory hits into context for the prompt."""
+        relevant = [h for h in hits if h.score >= MEMORY_CONTEXT_THRESHOLD]
+        if not relevant:
+            return ""
+        lines = ["Here is what you recall from past interactions:"]
+        for i, h in enumerate(relevant[:3], 1):
+            q = h.entry.question or "unknown question"
+            a = (h.entry.content or "")[:500]
+            lines.append(f"{i}. (Previously asked: {q.strip()[:120]})\n   {a.strip()}")
+        return "\n".join(lines)
+
+    def _compute_confidence(self, resp: ChatResponseWithLogprobs) -> float:
+        """Compute logprob_uncertainty from a local model response."""
+        avg_lp = resp.avg_logprob
+        if avg_lp is None:
+            return 0.5  # neutral if no logprobs available
+        # Sigmoid mapping: same as confidence_evaluator.compute_logprob_uncertainty
+        x = avg_lp * 2.0 + 3.0
+        return float(1.0 / (1.0 + math.exp(-x)))
+
+    def _estimate_cost(self, input_tokens: int, output_tokens: int) -> float:
+        """Rough cost estimate for a cloud call."""
+        model = self._cloud_model_name or ""
+        # Try to match against known rates.
+        for key, rates in _DEFAULT_COST_RATES.items():
+            if key in model.lower():
+                return (input_tokens * rates["input"] + output_tokens * rates["output"]) / 1_000_000
+        # Default: assume $3/M input, $15/M output (Sonnet-class).
+        return (input_tokens * 3.0 + output_tokens * 15.0) / 1_000_000
+
+    def _entry_age_days(self, entry) -> float:
+        """How many days old is this knowledge entry?"""
+        try:
+            created = datetime.fromisoformat(entry.created_at)
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            now = datetime.now(timezone.utc)
+            return (now - created).total_seconds() / 86400.0
+        except Exception:
+            return 0.0
+
+    def _record_query(
+        self, routed_to: str, cost: float, confidence: float, latency_ms: int,
+        learned: bool = False, question: str = "",
+    ) -> None:
+        """Update session stats and persist to query_log table."""
+        import uuid
+
+        s = self._session_stats
+        s.total_queries += 1
+        s.total_cost_usd += cost
+        # Estimate what this query would have cost if sent to cloud.
+        s.estimated_all_cloud_cost_usd += max(cost, 0.003)  # minimum $0.003 per query
+        if routed_to == "local":
+            s.local_queries += 1
+        elif routed_to == "cloud":
+            s.cloud_queries += 1
+        elif routed_to == "memory":
+            s.memory_queries += 1
+
+        # Persist to query_log (R6 AC1, AC4).
+        try:
+            now = datetime.now(timezone.utc).isoformat()
+            self._conn.execute(
+                "INSERT INTO query_log "
+                "(id, query_text, routing_decision, signals, fusion_weights, "
+                "fused_score, cost, latency_ms, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    str(uuid.uuid4()),
+                    question,
+                    routed_to,
+                    "{}",   # signals — not used in product v1
+                    "{}",   # fusion_weights — not used in product v1
+                    confidence,
+                    cost,
+                    latency_ms,
+                    now,
+                ),
+            )
+            self._conn.commit()
+        except Exception as e:
+            logger.warning("Failed to persist query log: %s", e)
+
+    def _append_history(self, question: str, answer: str) -> None:
+        """Add a turn to conversation history."""
+        self._history.append({"role": "user", "content": question})
+        self._history.append({"role": "assistant", "content": answer})
+
+
+# ── Helpers ────────────────────────────────────────────────────────
+
+def _parse_model_string(model_str: str, default_provider: str = "ollama") -> tuple[str, str]:
+    """Parse 'provider/model' into (provider, model). If no slash, use default_provider."""
+    if "/" in model_str:
+        parts = model_str.split("/", 1)
+        provider = parts[0].lower()
+        model = parts[1]
+        # Map common provider names.
+        if provider in ("ollama", "openai", "bedrock"):
+            return provider, model
+        # Treat unknown prefixes as part of the model name (e.g., "qllama/bge-large").
+        return default_provider, model_str
+    return default_provider, model_str
+
+
+def _elapsed_ms(started: float) -> int:
+    return int((time.perf_counter() - started) * 1000)

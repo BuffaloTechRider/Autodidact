@@ -1,4 +1,27 @@
-"""Core data types for Autodidact framework."""
+"""Core data types for Autodidact framework.
+
+Convention — when to use Pydantic vs dataclass:
+
+- **Pydantic BaseModel**: use for types at an external boundary. Anything that is
+  parsed from user input, validated against a contract, serialized to JSON /
+  SQLite, or exposed in public APIs. Benefits: field validation, JSON
+  round-tripping, descriptive errors. Cost: small per-construction overhead.
+
+- **@dataclass**: use for pure in-process value types that live entirely within
+  a single module's call chain. Benefits: zero validation overhead, minimal
+  ceremony. Cost: no validation — caller is responsible for correctness.
+
+Examples:
+- `KnowledgeEntry` / `NewKnowledgeEntry` / `RoutingDecision` → Pydantic (persisted
+  to SQLite, validated on construction).
+- `GroundedSelfAssessmentResult` → dataclass (internal return value from one
+  signal method, never serialized).
+- `LLMConfig`, `ChatResponse` → Pydantic (config + external API boundary).
+- `ChatMessage` → dataclass (pure internal value passed between LLMClient methods).
+
+When in doubt: Pydantic. The validation cost is negligible and the explicit
+constraints catch bugs.
+"""
 
 from __future__ import annotations
 
@@ -52,10 +75,12 @@ class KnowledgeScope(BaseModel):
 class KnowledgeEntry(BaseModel):
     id: str
     content: str
+    question: Optional[str] = None
     source: str
     confidence: float = 0.5
     tags: list[str] = Field(default_factory=list)
     embedding: Optional[list[float]] = None
+    answer_embedding: Optional[list[float]] = None
     tier: MemoryTier = MemoryTier.STM
     usage_count: int = 0
     created_at: str
@@ -72,10 +97,12 @@ class KnowledgeEntry(BaseModel):
 
 class NewKnowledgeEntry(BaseModel):
     content: str
+    question: Optional[str] = None
     source: str = "manual"
     confidence: float = 0.5
     tags: list[str] = Field(default_factory=list)
     embedding: Optional[list[float]] = None
+    answer_embedding: Optional[list[float]] = None
     domain: str = "general"
     topic: str = "uncategorized"
     category: KnowledgeCategory = KnowledgeCategory.FACTS
@@ -110,6 +137,11 @@ class AgentMetrics(BaseModel):
 class AutodidactConfig(BaseModel):
     db_path: str = "autodidact.db"
     confidence_threshold: float = 0.7
+    # Similarity floor for KnowledgeStore.search() when no per-call override.
+    # 0.75 is bge-large-calibrated after EXP-002 falsified the 0.60 hypothesis.
+    # Consumers with different information appetites should pass a per-call
+    # `min_similarity` to search() rather than mutating this value. See
+    # LAB_NOTES P19 and results/experiment/EXPERIMENT_LOG.md EXP-002.
     similarity_threshold: float = 0.75
     stm_promotion_accesses: int = 3
     decay_threshold: float = 0.1

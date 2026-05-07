@@ -17,7 +17,9 @@
         "test:unit": "vitest run tests/unit/",
         "test:props": "vitest run tests/properties/",
         "test:coverage": "vitest run --coverage",
-        "cli": "tsx src/cli.ts"
+        "cli": "tsx src/cli.ts",
+        "demo": "npx tsx src/demo-visual.ts",
+        "demo:bedrock": "npx tsx src/demo-bedrock.ts"
     },
     "keywords": [
         "ai",

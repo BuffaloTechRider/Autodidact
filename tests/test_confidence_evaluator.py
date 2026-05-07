@@ -130,16 +130,37 @@ class TestOutcomeUpdates:
         assert after["energy_scorer"]["alpha"] == before["energy_scorer"]["alpha"]
 
 
-class TestKnowledgeSimilarityThreshold:
-    """Test that knowledge_similarity returns 0 below threshold."""
+class TestKnowledgeSimilarity:
+    """Test that knowledge_similarity returns the raw max cosine similarity.
 
-    def test_below_threshold_returns_zero(self, setup):
+    Per EXP-002 / Task 13.7.4: the below-threshold zero-clamp was removed so
+    downstream ML consumers get the full gradient. Retrieval-side filtering
+    still happens in `KnowledgeStore.search()`.
+    """
+
+    def test_orthogonal_returns_raw_zero(self, setup):
         ce, conn, config = setup
         query = np.array([1.0, 0.0, 0.0] + [0.0] * 29, dtype=np.float32)
-        # Orthogonal embedding — similarity near 0
+        # Orthogonal embedding — raw similarity is near 0, not clamped.
         kb = np.array([0.0, 1.0, 0.0] + [0.0] * 29, dtype=np.float32)
         score = ce.compute_knowledge_similarity(query, [kb])
+        # Raw cosine(orthogonal) == 0 already; clamp-to-zero vs raw-is-zero
+        # would be indistinguishable here, so this is really testing that
+        # empty result doesn't crash.
         assert score == 0.0
+
+    def test_below_old_threshold_returns_raw_value(self, setup):
+        """Pre-13.7.4 this would have clamped to 0. Post-13.7.4 returns raw sim."""
+        ce, conn, config = setup
+        # Build a query and KB entry with cosine similarity ~0.5 (below 0.75).
+        query = np.array([1.0, 0.0] + [0.0] * 30, dtype=np.float32)
+        query /= np.linalg.norm(query)
+        # A 45-degree-ish offset: cos(60°) = 0.5.
+        kb = np.array([0.5, np.sqrt(3) / 2] + [0.0] * 30, dtype=np.float32)
+        kb /= np.linalg.norm(kb)
+        score = ce.compute_knowledge_similarity(query, [kb])
+        # Raw similarity should be ~0.5 — NOT zero-clamped.
+        assert 0.4 < score < 0.6, f"expected raw max_sim ~0.5, got {score}"
 
     def test_above_threshold_returns_similarity(self, setup):
         ce, conn, config = setup
@@ -156,6 +177,19 @@ class TestKnowledgeSimilarityThreshold:
         query = np.random.randn(32).astype(np.float32)
         score = ce.compute_knowledge_similarity(query, [])
         assert score == 0.0
+
+    def test_picks_max_across_multiple_embeddings(self, setup):
+        """Signal is max cosine, not mean."""
+        ce, conn, config = setup
+        query = np.array([1.0] + [0.0] * 31, dtype=np.float32)
+        # Orthogonal (sim=0), weak (sim~0.5), strong (sim~1.0).
+        weak = np.array([0.5, np.sqrt(3) / 2] + [0.0] * 30, dtype=np.float32)
+        weak /= np.linalg.norm(weak)
+        strong = query + np.random.randn(32).astype(np.float32) * 0.001
+        strong /= np.linalg.norm(strong)
+        orthogonal = np.array([0.0, 1.0] + [0.0] * 30, dtype=np.float32)
+        score = ce.compute_knowledge_similarity(query, [weak, orthogonal, strong])
+        assert score > 0.99, f"expected max_sim from `strong` (~1.0), got {score}"
 
 
 class TestEnergyScorer:

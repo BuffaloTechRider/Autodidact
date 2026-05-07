@@ -10,10 +10,12 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS knowledge_entries (
     id                TEXT PRIMARY KEY,
     content           TEXT NOT NULL,
+    question          TEXT,
     source            TEXT NOT NULL CHECK(source IN ('cloud_escalation','manual','self_verification')),
     confidence        REAL NOT NULL DEFAULT 0.5,
     tags              TEXT NOT NULL DEFAULT '[]',
     embedding         BLOB,
+    answer_embedding  BLOB,
     tier              TEXT NOT NULL DEFAULT 'STM' CHECK(tier IN ('STM','LTM')),
     usage_count       INTEGER NOT NULL DEFAULT 0,
     created_at        TEXT NOT NULL,
@@ -85,6 +87,94 @@ CREATE INDEX IF NOT EXISTS idx_ql_routing ON query_log(routing_decision);
 CREATE INDEX IF NOT EXISTS idx_ql_created ON query_log(created_at);
 CREATE INDEX IF NOT EXISTS idx_ql_session ON query_log(session_id);
 CREATE INDEX IF NOT EXISTS idx_ql_outcome ON query_log(outcome);
+
+-- ── Experiment tables (v0.1 ablation experiment) ──────────────────
+
+CREATE TABLE IF NOT EXISTS experiment_results (
+    id                                TEXT PRIMARY KEY,
+    run_id                            TEXT NOT NULL,
+    query_index                       INTEGER NOT NULL,
+    query_id                          TEXT NOT NULL,
+    query_text                        TEXT NOT NULL,
+    ground_truth                      TEXT NOT NULL,
+    category                          TEXT NOT NULL,
+
+    -- Signals (0..1 unless null)
+    knowledge_similarity              REAL NOT NULL,
+    query_classification              REAL NOT NULL,
+    energy_scorer                     REAL,
+    grounded_self_assessment          REAL NOT NULL,
+    logprob_uncertainty               REAL NOT NULL,
+    self_consistency                  REAL NOT NULL,
+
+    -- Per-signal latency (ms)
+    latency_knowledge_similarity      INTEGER NOT NULL,
+    latency_query_classification      INTEGER NOT NULL,
+    latency_energy_scorer             INTEGER,
+    latency_grounded_self_assessment  INTEGER NOT NULL,
+    latency_logprob_uncertainty       INTEGER NOT NULL,
+    latency_self_consistency          INTEGER NOT NULL,
+
+    -- Model outputs
+    local_answer                      TEXT NOT NULL,
+    local_avg_logprob                 REAL,
+    cloud_answer                      TEXT NOT NULL,
+
+    -- RouteLLM baseline scores (frozen classifiers applied per query)
+    routellm_no_memory                REAL NOT NULL,
+    routellm_plus_ks                  REAL NOT NULL,
+
+    -- Retrieval quality proxy (1 if any top-5 hit shares the query's MMLU-Pro category, else 0)
+    retrieval_recall_at_5             INTEGER NOT NULL DEFAULT 0,
+
+    -- Diagnostic: how the grounded_self_assessment signal was extracted per query.
+    -- One of 'logprob_softmax', 'text_hard', 'neutral'. Helps the memo stratify
+    -- AUROC by extraction mode so we can separate "signal genuinely works" from
+    -- "signal was mostly neutral fill-in".
+    gsa_extraction_mode               TEXT,
+
+    -- Correctness (cloud-determined)
+    local_correct                     INTEGER NOT NULL,
+    cloud_correct                     INTEGER NOT NULL,
+    judge_used                        INTEGER NOT NULL DEFAULT 0,
+
+    -- Cost accounting
+    cost_cloud_answer_usd             REAL NOT NULL DEFAULT 0.0,
+    cost_judge_usd                    REAL NOT NULL DEFAULT 0.0,
+    cost_local_usd                    REAL NOT NULL DEFAULT 0.0,
+
+    -- Error surface (populated when a row was recorded with a partial failure)
+    error_info                        TEXT,
+
+    created_at                        TEXT NOT NULL,
+    UNIQUE(run_id, query_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_er_run ON experiment_results(run_id);
+CREATE INDEX IF NOT EXISTS idx_er_run_category ON experiment_results(run_id, category);
+
+-- RouteLLM baseline training data (cached labels for the disjoint 1000-query training set)
+CREATE TABLE IF NOT EXISTS routellm_training_rows (
+    id                   TEXT PRIMARY KEY,
+    training_seed        INTEGER NOT NULL,
+    local_model          TEXT NOT NULL DEFAULT '',
+    query_id             TEXT NOT NULL,
+    query_text           TEXT NOT NULL,
+    query_embedding      BLOB NOT NULL,
+    knowledge_similarity REAL NOT NULL,
+    local_answer         TEXT NOT NULL,
+    cloud_answer         TEXT NOT NULL,
+    local_correct        INTEGER NOT NULL,
+    cloud_correct        INTEGER NOT NULL,
+    local_is_sufficient  INTEGER NOT NULL,
+    cost_cloud_usd       REAL NOT NULL DEFAULT 0.0,
+    cost_judge_usd       REAL NOT NULL DEFAULT 0.0,
+    created_at           TEXT NOT NULL,
+    UNIQUE(training_seed, local_model, query_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_rltr_seed ON routellm_training_rows(training_seed);
+CREATE INDEX IF NOT EXISTS idx_rltr_seed_model ON routellm_training_rows(training_seed, local_model);
 """
 
 
@@ -92,5 +182,84 @@ def init_database(db_path: str = "autodidact.db") -> sqlite3.Connection:
     """Initialize the SQLite database with the Autodidact schema."""
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
+
+    # Backfill migrations FIRST, before executescript -
+    # Reason: SCHEMA_SQL includes CREATE INDEX on columns we added later
+    # (e.g. routellm_training_rows.local_model). If the table already exists
+    # in an older DB without that column, the CREATE INDEX inside the
+    # executescript call will fail. Run ALTERs first so the columns exist
+    # before indexes reference them. Each ALTER is idempotent via try/except.
+    try:
+        conn.execute("ALTER TABLE knowledge_entries ADD COLUMN answer_embedding BLOB")
+        conn.commit()
+    except sqlite3.OperationalError:
+        # Table doesn't exist yet, or column already present. Both are fine —
+        # executescript below will handle the table-doesn't-exist case.
+        pass
+    try:
+        conn.execute(
+            "ALTER TABLE routellm_training_rows ADD COLUMN local_model TEXT NOT NULL DEFAULT ''"
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+    # UNIQUE constraint migration. The original schema had
+    # UNIQUE(training_seed, query_id). The cross-model Task 14 setup needs
+    # UNIQUE(training_seed, local_model, query_id). SQLite can't change a
+    # UNIQUE constraint in-place — we detect the old shape and rebuild.
+    try:
+        schema_row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='routellm_training_rows'"
+        ).fetchone()
+        if schema_row is not None:
+            sql = schema_row["sql"] or ""
+            has_new_constraint = "UNIQUE(training_seed, local_model, query_id)" in sql
+            table_exists = True
+        else:
+            has_new_constraint = False
+            table_exists = False
+
+        if table_exists and not has_new_constraint:
+            # Rebuild: copy rows with valid local_model tags only. Orphans
+            # (empty local_model, from pre-migration aborted runs) are dropped
+            # — they can't be matched to a model.
+            conn.executescript("""
+                BEGIN;
+                CREATE TABLE routellm_training_rows_new (
+                    id                   TEXT PRIMARY KEY,
+                    training_seed        INTEGER NOT NULL,
+                    local_model          TEXT NOT NULL DEFAULT '',
+                    query_id             TEXT NOT NULL,
+                    query_text           TEXT NOT NULL,
+                    query_embedding      BLOB NOT NULL,
+                    knowledge_similarity REAL NOT NULL,
+                    local_answer         TEXT NOT NULL,
+                    cloud_answer         TEXT NOT NULL,
+                    local_correct        INTEGER NOT NULL,
+                    cloud_correct        INTEGER NOT NULL,
+                    local_is_sufficient  INTEGER NOT NULL,
+                    cost_cloud_usd       REAL NOT NULL DEFAULT 0.0,
+                    cost_judge_usd       REAL NOT NULL DEFAULT 0.0,
+                    created_at           TEXT NOT NULL,
+                    UNIQUE(training_seed, local_model, query_id)
+                );
+                INSERT INTO routellm_training_rows_new
+                SELECT id, training_seed, local_model, query_id, query_text,
+                       query_embedding, knowledge_similarity, local_answer,
+                       cloud_answer, local_correct, cloud_correct,
+                       local_is_sufficient, cost_cloud_usd, cost_judge_usd,
+                       created_at
+                FROM routellm_training_rows
+                WHERE local_model != '';
+                DROP TABLE routellm_training_rows;
+                ALTER TABLE routellm_training_rows_new RENAME TO routellm_training_rows;
+                COMMIT;
+            """)
+    except sqlite3.OperationalError:
+        # Any unexpected shape is fine — executescript below will run and
+        # CREATE TABLE IF NOT EXISTS handles fresh DBs.
+        pass
+
     conn.executescript(SCHEMA_SQL)
     return conn

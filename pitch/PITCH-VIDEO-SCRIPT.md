@@ -46,7 +46,7 @@ No human works this way. A good employee learns from every answer. They stop ask
 
 "Autodidact gives your AI agent a brain — a local model running on your machine — and teaches it how to learn.
 
-When a query comes in, the brain thinks first. Checks its memory. If it knows the answer, it responds immediately — zero cost. If it's not confident, it asks a more powerful cloud model. But here's the key — it extracts the knowledge and stores it locally. The search was temporary. The learning is permanent."
+When a query comes in, the brain thinks first. Checks its memory. If it knows the answer, it responds immediately — zero cost. If it's not confident, it asks a more powerful cloud model. But here's the key — it extracts the knowledge, skills and stores it locally. The search was temporary. The learning is permanent."
 
 *[Cut to terminal — show actual demo clip]*
 

@@ -34,6 +34,22 @@ class ScoredKnowledgeEntry:
         self.score = score
 
 
+class MixedEmbeddingDimensionError(ValueError):
+    """Raised when the knowledge store contains embeddings of mixed dimensions.
+
+    This typically means the embedding model was changed (e.g. nomic-embed-text at
+    768 dim swapped for bge-large-en-v1.5 at 1024 dim) without re-seeding the KB.
+    FAISS cannot build an index over mixed-dim vectors, and cosine similarity
+    between different-dim vectors is meaningless anyway.
+
+    Recovery: drop the knowledge_entries table and re-seed.
+
+        sqlite3 autodidact_experiment.db "DELETE FROM knowledge_entries"
+        python -m benchmarks.seeding --n 500 --seed 42 \\
+            --embedding-model qllama/bge-large-en-v1.5
+    """
+
+
 class KnowledgeStore:
     """Hierarchical knowledge store with Ebbinghaus decay and cosine similarity search."""
 
@@ -43,6 +59,9 @@ class KnowledgeStore:
         self._faiss_index: Optional[faiss.IndexFlatIP] = None
         self._faiss_ids: list[str] = []
         self._faiss_dirty = True
+        # Cached dim of first valid entry; None means "not yet checked / store empty".
+        # Reset on _faiss_dirty to catch any out-of-band mutations.
+        self._expected_dim: Optional[int] = None
 
     def insert(self, entry: NewKnowledgeEntry) -> KnowledgeEntry:
         """Insert a new knowledge entry into STM."""
@@ -51,21 +70,49 @@ class KnowledgeStore:
 
         embedding_blob = None
         if entry.embedding is not None:
+            new_dim = len(entry.embedding)
+            existing_dim = self._get_existing_embedding_dim()
+            if existing_dim is not None and existing_dim != new_dim:
+                raise MixedEmbeddingDimensionError(
+                    f"Cannot insert embedding of dim {new_dim}: knowledge store "
+                    f"already contains {existing_dim}-dim embeddings. This usually "
+                    f"means the embedding model was changed without re-seeding. "
+                    f"Drop the knowledge_entries table and re-run seeding. "
+                    f"See autodidact.knowledge_store.MixedEmbeddingDimensionError "
+                    f"for recovery instructions."
+                )
             embedding_blob = np.array(entry.embedding, dtype=np.float32).tobytes()
+
+        # Answer-side embedding is analysis-only in v0.1 (not wired into retrieval).
+        # We validate dim against the same expected_dim so mixed-embedder bugs are
+        # caught on this column too.
+        answer_embedding_blob = None
+        if entry.answer_embedding is not None:
+            ans_dim = len(entry.answer_embedding)
+            existing_dim = self._get_existing_embedding_dim()
+            if existing_dim is not None and existing_dim != ans_dim:
+                raise MixedEmbeddingDimensionError(
+                    f"Cannot insert answer_embedding of dim {ans_dim}: knowledge store "
+                    f"already contains {existing_dim}-dim embeddings."
+                )
+            answer_embedding_blob = np.array(entry.answer_embedding, dtype=np.float32).tobytes()
 
         self.conn.execute(
             """INSERT INTO knowledge_entries
-            (id, content, source, confidence, tags, embedding, tier, usage_count,
+            (id, content, question, source, confidence, tags, embedding, answer_embedding,
+             tier, usage_count,
              created_at, last_accessed, metadata, domain, topic, category,
              valid_from, valid_to, verbatim_response)
-            VALUES (?, ?, ?, ?, ?, ?, 'STM', 0, ?, ?, ?, ?, ?, ?, ?, NULL, ?)""",
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'STM', 0, ?, ?, ?, ?, ?, ?, ?, NULL, ?)""",
             (
                 entry_id,
                 entry.content,
+                entry.question,
                 entry.source,
                 entry.confidence,
                 json.dumps(entry.tags),
                 embedding_blob,
+                answer_embedding_blob,
                 now,
                 now,
                 json.dumps(entry.metadata),
@@ -82,10 +129,12 @@ class KnowledgeStore:
         return KnowledgeEntry(
             id=entry_id,
             content=entry.content,
+            question=entry.question,
             source=entry.source,
             confidence=entry.confidence,
             tags=entry.tags,
             embedding=entry.embedding,
+            answer_embedding=entry.answer_embedding,
             tier=MemoryTier.STM,
             usage_count=0,
             created_at=now,
@@ -103,21 +152,37 @@ class KnowledgeStore:
         limit: int = 5,
         scope: Optional[KnowledgeScope] = None,
         as_of: Optional[str] = None,
+        min_similarity: Optional[float] = None,
     ) -> list[ScoredKnowledgeEntry]:
         """Search knowledge entries by cosine similarity with minimum threshold.
 
         Uses FAISS for fast approximate nearest neighbor search when no scope
         filters are applied. Falls back to filtered brute-force when scoped.
+
+        Parameters
+        ----------
+        min_similarity
+            Per-call override for the similarity floor. If None, uses
+            ``config.similarity_threshold``. Different consumers have
+            different information appetites (see EXP-002 and LAB_NOTES P19):
+            GSA wants strong hits or none (0.70+), answer-injection wants
+            medium (0.60), knowledge_similarity-as-feature wants raw top-k
+            (0.0). Pass a per-call value rather than mutating config.
         """
+        threshold = (
+            min_similarity
+            if min_similarity is not None
+            else self.config.similarity_threshold
+        )
         # If scoped or historical, use filtered search (can't use FAISS index directly)
         if scope or as_of:
-            return self._filtered_search(query_embedding, limit, scope, as_of)
+            return self._filtered_search(query_embedding, limit, scope, as_of, threshold)
 
         # Use FAISS for unscoped search on current entries
-        return self._faiss_search(query_embedding, limit)
+        return self._faiss_search(query_embedding, limit, threshold)
 
     def _faiss_search(
-        self, query_embedding: np.ndarray, limit: int
+        self, query_embedding: np.ndarray, limit: int, threshold: float
     ) -> list[ScoredKnowledgeEntry]:
         """Fast search using FAISS inner-product index."""
         self._rebuild_faiss_if_dirty()
@@ -137,7 +202,7 @@ class KnowledgeStore:
         for i in range(k):
             idx = int(indices[0][i])
             sim = float(scores[0][i])
-            if idx < 0 or sim < self.config.similarity_threshold:
+            if idx < 0 or sim < threshold:
                 continue
             entry_id = self._faiss_ids[idx]
             entry = self.get(entry_id)
@@ -163,15 +228,27 @@ class KnowledgeStore:
             self._faiss_dirty = False
             return
 
-        # Determine embedding dimension from first entry
+        # Determine embedding dimension from first entry and validate all others match.
+        # A mixed-dim store typically indicates an embedder swap without re-seeding;
+        # numpy would raise a cryptic broadcast error below — raise a clearer one now.
         first_emb = np.frombuffer(rows[0]["embedding"], dtype=np.float32)
         dim = len(first_emb)
+        self._expected_dim = dim
 
         # Build normalized embedding matrix
         embeddings = np.zeros((len(rows), dim), dtype=np.float32)
         ids: list[str] = []
         for i, row in enumerate(rows):
             emb = np.frombuffer(row["embedding"], dtype=np.float32)
+            if len(emb) != dim:
+                raise MixedEmbeddingDimensionError(
+                    f"Knowledge store contains mixed embedding dimensions: "
+                    f"first entry has dim {dim}, entry at index {i} has dim {len(emb)}. "
+                    f"This usually means the embedding model was changed without "
+                    f"re-seeding. Drop the knowledge_entries table and re-run seeding. "
+                    f"See autodidact.knowledge_store.MixedEmbeddingDimensionError "
+                    f"for recovery instructions."
+                )
             embeddings[i] = emb
             ids.append(row["id"])
 
@@ -191,8 +268,11 @@ class KnowledgeStore:
         limit: int,
         scope: Optional[KnowledgeScope] = None,
         as_of: Optional[str] = None,
+        threshold: Optional[float] = None,
     ) -> list[ScoredKnowledgeEntry]:
         """Filtered brute-force search for scoped/historical queries."""
+        if threshold is None:
+            threshold = self.config.similarity_threshold
         # Build scope filter
         conditions = ["valid_to IS NULL"]
         params: list = []
@@ -232,7 +312,7 @@ class KnowledgeStore:
             emb_norm = emb / (np.linalg.norm(emb) + 1e-10)
             sim = float(np.dot(query_norm, emb_norm))
 
-            if sim < self.config.similarity_threshold:
+            if sim < threshold:
                 continue
 
             entry = self._row_to_entry(row)
@@ -346,6 +426,28 @@ class KnowledgeStore:
         ltm = self.conn.execute("SELECT COUNT(*) as cnt FROM knowledge_entries WHERE tier = 'LTM' AND valid_to IS NULL").fetchone()["cnt"]
         return {"total": total, "stm": stm, "ltm": ltm}
 
+    def _get_existing_embedding_dim(self) -> Optional[int]:
+        """Return the embedding dim of the first valid entry with a non-null embedding.
+
+        Used by insert() to detect embedder swaps without re-seeding. Cached on
+        first call; invalidated whenever the FAISS index is marked dirty (which
+        _rebuild_faiss_if_dirty also repopulates as a side effect).
+        """
+        if self._expected_dim is not None:
+            return self._expected_dim
+
+        row = self.conn.execute(
+            "SELECT embedding FROM knowledge_entries "
+            "WHERE embedding IS NOT NULL AND valid_to IS NULL "
+            "LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return None
+
+        dim = len(np.frombuffer(row["embedding"], dtype=np.float32))
+        self._expected_dim = dim
+        return dim
+
     def list_domains(self) -> list[str]:
         rows = self.conn.execute("SELECT DISTINCT domain FROM knowledge_entries WHERE valid_to IS NULL").fetchall()
         return [r["domain"] for r in rows]
@@ -374,13 +476,29 @@ class KnowledgeStore:
         embedding = None
         if row["embedding"]:
             embedding = np.frombuffer(row["embedding"], dtype=np.float32).tolist()
+        # answer_embedding was added in a later schema migration; older rows
+        # may lack the column entirely.
+        answer_embedding = None
+        try:
+            if row["answer_embedding"]:
+                answer_embedding = np.frombuffer(row["answer_embedding"], dtype=np.float32).tolist()
+        except (IndexError, KeyError):
+            answer_embedding = None
+        # Defensive: older rows may lack the 'question' column after migration
+        question = None
+        try:
+            question = row["question"]
+        except (IndexError, KeyError):
+            question = None
         return KnowledgeEntry(
             id=row["id"],
             content=row["content"],
+            question=question,
             source=row["source"],
             confidence=row["confidence"],
             tags=json.loads(row["tags"]),
             embedding=embedding,
+            answer_embedding=answer_embedding,
             tier=MemoryTier(row["tier"]),
             usage_count=row["usage_count"],
             created_at=row["created_at"],

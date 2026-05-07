@@ -52,7 +52,18 @@ class ConfidenceEvaluator:
     def compute_knowledge_similarity(
         self, query_embedding: np.ndarray, knowledge_embeddings: list[np.ndarray]
     ) -> float:
-        """Max cosine similarity against knowledge store. Returns 0 if below threshold."""
+        """Max cosine similarity against the retrieved knowledge embeddings.
+
+        Returns the raw max cosine similarity in [0, 1]. Empty input returns 0.
+
+        Note: earlier versions zero-clamped this when the result was below
+        ``config.similarity_threshold``. EXP-002 showed that lost gradient
+        information hurt downstream ML consumers (RouteLLM_plus_ks classifier,
+        Thompson fusion weight learning). The retrieval-side threshold still
+        applies in ``KnowledgeStore.search()``, which decides which entries
+        even get shown to this method — that's the right place to filter.
+        The signal value is a measurement, not a filter.
+        """
         if not knowledge_embeddings:
             return 0.0
         query_norm = query_embedding / (np.linalg.norm(query_embedding) + 1e-10)
@@ -61,9 +72,8 @@ class ConfidenceEvaluator:
             emb_norm = emb / (np.linalg.norm(emb) + 1e-10)
             sim = float(np.dot(query_norm, emb_norm))
             max_sim = max(max_sim, sim)
-        if max_sim < self.config.similarity_threshold:
-            return 0.0
-        return max_sim
+        # Clip to [0, 1] to handle floating-point precision.
+        return max(0.0, min(1.0, max_sim))
 
     def compute_logprob_uncertainty(
         self, avg_logprob: float, scale: float = 2.0, shift: float = 3.0
