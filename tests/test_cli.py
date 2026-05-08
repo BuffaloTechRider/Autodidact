@@ -140,56 +140,87 @@ class TestMemorySearchCommand:
 
 
 class TestInitCommand:
-    """autodidact init — interactive config generation (R8)."""
+    """autodidact init — interactive config generation (R8).
+
+    These tests exercise the basic shape of the new zero-friction wizard.
+    More detailed mode-specific tests live in test_init_wizard_integration.py.
+    """
 
     @patch("autodidact.cli._run_smoke_test")
-    def test_init_creates_config_file(self, mock_smoke, tmp_path):
+    @patch("autodidact.cli.detect_ollama")
+    @patch("autodidact.cli.is_model_available", return_value=True)
+    def test_init_creates_config_file(
+        self, mock_model, mock_detect, mock_smoke, tmp_path
+    ):
+        """local-only mode produces a config file with a 'local' section."""
+        from autodidact.setup_wizard import OllamaStatus
+        mock_detect.return_value = OllamaStatus(installed=True, path="/usr/local/bin/ollama")
         config_path = tmp_path / "config.yaml"
-        # Simulate interactive input: model, skip cloud, db path
-        input_text = "qwen2.5:7b\nskip\n" + str(tmp_path / "memory.db") + "\n"
+        # mode=3 (local-only), local model default, db path
+        input_text = "3\nqwen2.5:7b\n" + str(tmp_path / "memory.db") + "\n"
 
         result = runner.invoke(
             app, ["init", "--config-path", str(config_path)], input=input_text
         )
-        assert result.exit_code == 0
+        assert result.exit_code == 0, result.output
         assert config_path.exists()
 
         config = yaml.safe_load(config_path.read_text())
         assert config["local"]["model"] == "qwen2.5:7b"
 
     @patch("autodidact.cli._run_smoke_test")
-    def test_init_with_cloud_provider(self, mock_smoke, tmp_path):
+    @patch("autodidact.cli.detect_ollama")
+    @patch("autodidact.cli.is_model_available", return_value=True)
+    def test_init_with_cloud_provider(
+        self, mock_model, mock_detect, mock_smoke, tmp_path
+    ):
+        """local+cloud mode records the chosen cloud provider."""
+        from autodidact.setup_wizard import OllamaStatus
+        mock_detect.return_value = OllamaStatus(installed=True, path="/usr/local/bin/ollama")
         config_path = tmp_path / "config.yaml"
-        # model, cloud provider, api key, db path
-        input_text = "qwen2.5:7b\nopenai\nsk-test123\n" + str(tmp_path / "memory.db") + "\n"
+        # mode=1, local model, cloud provider openai, api key, model default, db default
+        input_text = "1\nqwen2.5:7b\nopenai\nsk-test123\n\n" + str(tmp_path / "memory.db") + "\n"
 
         result = runner.invoke(
             app, ["init", "--config-path", str(config_path)], input=input_text
         )
-        assert result.exit_code == 0
+        assert result.exit_code == 0, result.output
 
         config = yaml.safe_load(config_path.read_text())
         assert config["cloud"]["provider"] == "openai"
 
     @patch("autodidact.cli._run_smoke_test")
-    def test_init_defaults(self, mock_smoke, tmp_path):
+    @patch("autodidact.cli.detect_ollama")
+    @patch("autodidact.cli.is_model_available", return_value=True)
+    def test_init_defaults(self, mock_model, mock_detect, mock_smoke, tmp_path):
+        """All defaults: mode=1 (local+cloud), default model, default cloud."""
+        from autodidact.setup_wizard import OllamaStatus
+        mock_detect.return_value = OllamaStatus(installed=True, path="/usr/local/bin/ollama")
         config_path = tmp_path / "config.yaml"
-        # All defaults (just press enter for each prompt)
-        input_text = "\nskip\n\n"
+        # mode default (1=local_cloud), model default, cloud=openai, api key, model default, db default
+        input_text = "\n\nopenai\nsk-test\n\n\n"
 
         result = runner.invoke(
             app, ["init", "--config-path", str(config_path)], input=input_text
         )
-        assert result.exit_code == 0
+        assert result.exit_code == 0, result.output
 
         config = yaml.safe_load(config_path.read_text())
         assert config["local"]["model"] == "qwen2.5:7b"
         assert "Ready" in result.output
 
     @patch("autodidact.cli._run_smoke_test")
-    def test_init_writes_yaml_format(self, mock_smoke, tmp_path):
+    @patch("autodidact.cli.detect_ollama")
+    @patch("autodidact.cli.is_model_available", return_value=True)
+    def test_init_writes_yaml_format(
+        self, mock_model, mock_detect, mock_smoke, tmp_path
+    ):
+        """Config YAML has the expected top-level structure."""
+        from autodidact.setup_wizard import OllamaStatus
+        mock_detect.return_value = OllamaStatus(installed=True, path="/usr/local/bin/ollama")
         config_path = tmp_path / "config.yaml"
-        input_text = "qwen2.5:7b\nskip\n\n"
+        # mode=3 (local-only), defaults
+        input_text = "3\n\n\n"
 
         runner.invoke(app, ["init", "--config-path", str(config_path)], input=input_text)
 

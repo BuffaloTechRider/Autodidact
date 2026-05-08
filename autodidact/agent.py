@@ -108,6 +108,9 @@ class Agent:
         cloud_base_url: Optional[str] = None,
         cloud_api_key_env: Optional[str] = None,
         cloud_region: str = "us-west-2",
+        local_base_url: Optional[str] = None,
+        local_api_key_env: Optional[str] = None,
+        local_region: str = "us-west-2",
         embedding_model: Optional[str] = None,
         db_path: str = "~/.autodidact/memory.db",
         confidence_threshold: float = 0.7,
@@ -125,21 +128,31 @@ class Agent:
         self._config = AutodidactConfig(db_path=self._db_path)
         self.memory = KnowledgeStore(self._conn, self._config)
 
-        # Local model client (Ollama).
+        # "Local" model client — normally Ollama, but can be any provider for
+        # cloud-to-cloud mode (cheap cloud model in the local slot, expensive
+        # in the cloud slot).
         self._local_client: Optional[LLMClient] = None
         self._local_model_name = local_model
         if local_model:
-            # Parse "ollama/qwen2.5:7b" → provider="ollama", model="qwen2.5:7b"
+            # Parse "ollama/qwen2.5:7b" → provider="ollama", model="qwen2.5:7b".
+            # "openai/gpt-4o-mini" → provider="openai", model="gpt-4o-mini".
             provider, model = _parse_model_string(local_model, default_provider="ollama")
             emb_model = embedding_model or "qllama/bge-large-en-v1.5"
             # Strip provider prefix from embedding model if present.
             if "/" in emb_model and not emb_model.startswith("http"):
                 _, emb_model = emb_model.split("/", 1)
-            self._local_client = LLMClient(LLMConfig(
-                provider=provider,
-                model=model,
-                embedding_model=emb_model,
-            ))
+            local_config_kwargs: dict = {
+                "provider": provider,
+                "model": model,
+                "embedding_model": emb_model,
+            }
+            # Wire provider-specific settings when the "local" slot isn't Ollama.
+            if provider == "openai":
+                local_config_kwargs["base_url"] = local_base_url or "https://api.openai.com/v1"
+                local_config_kwargs["api_key_env"] = local_api_key_env or "OPENAI_API_KEY"
+            elif provider == "bedrock":
+                local_config_kwargs["region"] = local_region
+            self._local_client = LLMClient(LLMConfig(**local_config_kwargs))
 
         # Cloud model client.
         self._cloud_client: Optional[LLMClient] = None

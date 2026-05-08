@@ -20,6 +20,15 @@ import yaml
 from rich.console import Console
 
 from autodidact.agent import Agent, QueryResponse, SavingsReport
+from autodidact.setup_wizard import (
+    build_config,
+    detect_ollama,
+    get_cloud_preset,
+    get_ollama_install_command,
+    is_model_available,
+    list_cloud_providers,
+    pull_ollama_model,
+)
 from autodidact.thought_renderer import ThoughtRenderer
 
 app = typer.Typer(help="Autodidact — self-learning AI agent")
@@ -52,18 +61,59 @@ def _load_config(path: Path) -> dict:
 
 
 def _agent_from_config(config: dict) -> Agent:
-    """Create an Agent from a config dict."""
-    local_model = config.get("local", {}).get("model")
-    if local_model:
-        local_model = f"ollama/{local_model}"
+    """Create an Agent from a config dict.
 
-    cloud_model = None
-    cloud_provider = config.get("cloud", {}).get("provider", "openai")
-    cloud_api_key = config.get("cloud", {}).get("api_key")
-    if config.get("cloud", {}).get("model"):
-        cloud_model = f"{cloud_provider}/{config['cloud']['model']}"
+    Handles three modes:
+    - local+cloud: local.model is bare (e.g. 'qwen2.5:7b') → Ollama.
+    - cloud+cloud: local.provider is set (e.g. 'openai') → cheap cloud in local slot.
+    - local-only: no 'cloud' section.
+    """
+    import os
 
-    embedding_model = config.get("local", {}).get("embedding_model")
+    local_cfg = config.get("local", {})
+    cloud_cfg = config.get("cloud", {})
+
+    # ── "Local" slot (may be Ollama or a cheap cloud in cloud+cloud mode) ─
+    local_provider = local_cfg.get("provider")  # set only in cloud+cloud mode
+    local_model_name = local_cfg.get("model")
+    local_model: Optional[str] = None
+    local_base_url: Optional[str] = None
+    local_api_key_env: Optional[str] = None
+
+    if local_model_name:
+        if local_provider and local_provider != "ollama":
+            # Cloud+cloud: cheap cloud model in the local slot.
+            local_model = f"{local_provider}/{local_model_name}"
+            local_base_url = local_cfg.get("base_url")
+            preset = get_cloud_preset(local_provider)
+            local_api_key_env = preset.get("api_key_env") or "OPENAI_API_KEY"
+            # If config embeds an API key, export it into the env var the
+            # LLMClient reads from.
+            local_api_key = local_cfg.get("api_key")
+            if local_api_key and local_api_key_env:
+                os.environ.setdefault(local_api_key_env, local_api_key)
+        else:
+            # Local+cloud or local-only: Ollama.
+            local_model = f"ollama/{local_model_name}"
+
+    # ── Cloud slot ─────────────────────────────────────────────────
+    cloud_provider = cloud_cfg.get("provider", "openai")
+    cloud_model_name = cloud_cfg.get("model")
+    cloud_model: Optional[str] = None
+    cloud_base_url: Optional[str] = None
+    cloud_api_key_env: Optional[str] = None
+
+    if cloud_model_name:
+        cloud_model = f"{cloud_provider}/{cloud_model_name}"
+        cloud_base_url = cloud_cfg.get("base_url")
+        preset = get_cloud_preset(cloud_provider)
+        cloud_api_key_env = preset.get("api_key_env") or "OPENAI_API_KEY"
+        cloud_api_key = cloud_cfg.get("api_key")
+        if cloud_api_key and cloud_api_key_env:
+            os.environ.setdefault(cloud_api_key_env, cloud_api_key)
+
+    # ── Common ─────────────────────────────────────────────────────
+    embedding_model = local_cfg.get("embedding_model")
     db_path = config.get("memory", {}).get("path", "~/.autodidact/memory.db")
     threshold = config.get("routing", {}).get("confidence_threshold", 0.7)
 
@@ -76,9 +126,14 @@ def _agent_from_config(config: dict) -> Agent:
     )
     if embedding_model:
         kwargs["embedding_model"] = embedding_model
-    if cloud_api_key:
-        import os
-        os.environ.setdefault("OPENAI_API_KEY", cloud_api_key)
+    if local_base_url:
+        kwargs["local_base_url"] = local_base_url
+    if local_api_key_env:
+        kwargs["local_api_key_env"] = local_api_key_env
+    if cloud_base_url:
+        kwargs["cloud_base_url"] = cloud_base_url
+    if cloud_api_key_env:
+        kwargs["cloud_api_key_env"] = cloud_api_key_env
 
     agent = Agent(**kwargs)
 
@@ -111,56 +166,146 @@ def init(
         None, "--config-path", help="Path to write config file"
     ),
 ) -> None:
-    """Interactive config generation (R8)."""
+    """Zero-friction setup wizard (R8).
+
+    Three modes:
+      1. Local + Cloud — Ollama local + cloud API for escalation (best savings)
+      2. Cloud + Cloud — cheap cloud + expensive cloud (no Ollama needed)
+      3. Local only — Ollama only, no cloud (free, no escalation)
+
+    For Ollama modes: auto-detects Ollama, offers install if missing, auto-pulls
+    models. For cloud modes: uses presets for OpenAI, OpenRouter, DeepSeek, Bedrock.
+    """
     out_path = Path(config_path) if config_path else _DEFAULT_CONFIG_PATH
 
-    # Ask: local model name.
-    local_model = typer.prompt("Local model name", default="qwen2.5:7b")
+    console.print("[bold]Autodidact — Setup Wizard[/bold]")
+    console.print()
+    console.print("[bold]Pick a setup mode:[/bold]")
+    console.print("  1. Local + Cloud   — Ollama local + cloud for escalation (best savings)")
+    console.print("  2. Cloud + Cloud   — cheap cloud + expensive cloud (no GPU needed)")
+    console.print("  3. Local only      — Ollama only, no cloud (free, no learning escalations)")
+    mode_input = typer.prompt("Mode", default="1")
+    mode_map = {"1": "local_cloud", "2": "cloud_cloud", "3": "local_only"}
+    mode = mode_map.get(mode_input.strip(), "local_cloud")
 
-    # Ask: cloud provider (or skip).
-    cloud_input = typer.prompt(
-        "Cloud provider (openai/bedrock/skip)", default="skip"
-    )
+    if mode in ("local_cloud", "local_only"):
+        config = _init_with_ollama(mode)
+    else:
+        config = _init_cloud_to_cloud()
 
-    cloud_config: dict = {}
-    if cloud_input.lower() != "skip":
-        api_key = typer.prompt("API key")
-        cloud_config = {
-            "provider": cloud_input.lower(),
-            "model": "gpt-4o" if cloud_input.lower() == "openai" else "claude-sonnet-4-5",
-            "api_key": api_key,
-        }
-
-    # Ask: memory DB path.
     db_path = typer.prompt("Memory DB path", default="~/.autodidact/memory.db")
-
-    # Build config.
-    config: dict = {
-        "local": {
-            "model": local_model,
-            "embedding_model": "qllama/bge-large-en-v1.5",
-        },
-        "routing": {
-            "confidence_threshold": 0.7,
-        },
-        "memory": {
-            "path": db_path,
-        },
-    }
-    if cloud_config:
-        config["cloud"] = cloud_config
+    config.setdefault("memory", {})["path"] = db_path
 
     # Write config YAML.
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w") as f:
         yaml.dump(config, f, default_flow_style=False, sort_keys=False)
 
-    console.print(f"\nConfig written to {out_path}", style="green")
+    console.print(f"\nConfig written to [green]{out_path}[/green]")
 
     # Smoke test.
     _run_smoke_test(config)
 
-    console.print("\n✅ Ready! Run `autodidact chat` to start.", style="bold green")
+    console.print("\n✅ [bold green]Ready![/bold green] Run [cyan]autodidact chat[/cyan] to start.")
+
+
+def _init_with_ollama(mode: str) -> dict:
+    """Run the Ollama-based init flow. Returns a config dict."""
+    # Detect Ollama.
+    status = detect_ollama()
+    if not status.installed:
+        console.print(
+            "\n[yellow]Ollama is not installed on your system.[/yellow]",
+        )
+        cmd = get_ollama_install_command()
+        console.print(f"Install it with:  [cyan]{cmd}[/cyan]")
+        keep = typer.prompt("Continue anyway? (y/n)", default="n")
+        if keep.strip().lower() != "y":
+            console.print("Aborted. Install Ollama and re-run `autodidact init`.", style="yellow")
+            raise typer.Exit(0)
+
+    # Pick local model.
+    local_model = typer.prompt("Local chat model", default="qwen2.5:7b")
+    embedding_model = "qllama/bge-large-en-v1.5"
+
+    # Auto-pull missing models.
+    if status.installed:
+        if not is_model_available(local_model):
+            console.print(f"Model [cyan]{local_model}[/cyan] not found. Pulling...", style="dim")
+            pull_ollama_model(local_model)
+        if not is_model_available(embedding_model):
+            console.print(f"Embedding model [cyan]{embedding_model}[/cyan] not found. Pulling...", style="dim")
+            pull_ollama_model(embedding_model)
+
+    # Cloud setup (only for local_cloud mode).
+    if mode == "local_cloud":
+        cloud_cfg = _prompt_single_cloud_provider(slot="cloud")
+        return build_config(
+            mode="local_cloud",
+            local_model=local_model,
+            embedding_model=embedding_model,
+            cloud_provider=cloud_cfg["provider"],
+            cloud_model=cloud_cfg["model"],
+            cloud_api_key=cloud_cfg["api_key"],
+            cloud_base_url=cloud_cfg.get("base_url"),
+        )
+
+    return build_config(
+        mode="local_only",
+        local_model=local_model,
+        embedding_model=embedding_model,
+    )
+
+
+def _init_cloud_to_cloud() -> dict:
+    """Run the cloud+cloud init flow. Returns a config dict."""
+    console.print("\n[bold]Cheap cloud model[/bold] (used for most queries):")
+    cheap = _prompt_single_cloud_provider(slot="cheap")
+
+    console.print("\n[bold]Expensive cloud model[/bold] (escalation target):")
+    expensive = _prompt_single_cloud_provider(slot="expensive")
+
+    return build_config(
+        mode="cloud_cloud",
+        cheap_cloud_provider=cheap["provider"],
+        cheap_cloud_model=cheap["model"],
+        cheap_cloud_api_key=cheap["api_key"],
+        cheap_cloud_base_url=cheap.get("base_url"),
+        expensive_cloud_provider=expensive["provider"],
+        expensive_cloud_model=expensive["model"],
+        expensive_cloud_api_key=expensive["api_key"],
+        expensive_cloud_base_url=expensive.get("base_url"),
+    )
+
+
+def _prompt_single_cloud_provider(*, slot: str) -> dict:
+    """Interactively configure one cloud provider.
+
+    slot: 'cloud' / 'cheap' / 'expensive' — used only for prompt labeling
+    and to decide which default model (cheap vs expensive) to pick.
+    """
+    providers = list_cloud_providers()
+    console.print("  Providers: " + ", ".join(providers))
+    provider = typer.prompt("  Provider", default="openai").strip().lower()
+    preset = get_cloud_preset(provider)
+
+    api_key = typer.prompt("  API key")
+
+    # Pick a model: default to cheap/expensive based on slot.
+    default_model = preset.get("default_cheap", "")
+    if slot in ("cloud", "expensive"):
+        default_model = preset.get("default_expensive", "") or default_model
+    models = preset.get("models", [])
+    if models:
+        console.print("  Available models: " + ", ".join(models))
+    model = typer.prompt("  Model", default=default_model)
+
+    return {
+        "provider": provider,
+        "model": model,
+        "api_key": api_key,
+        "base_url": preset.get("base_url") or None,
+    }
 
 
 def _run_smoke_test(config: dict) -> None:
