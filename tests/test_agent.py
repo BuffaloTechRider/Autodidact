@@ -194,3 +194,121 @@ class TestSavings:
         assert s.local_queries == 2
         assert s.cloud_queries == 0
         assert s.total_cost_usd == 0.0
+
+
+class TestStaleMemoryFallthrough:
+    """Test the stale-memory routing behavior (bugfix).
+
+    When a memory hit is older than the staleness threshold, the agent should
+    fall through to Stage 2 (local generation + confidence check) — NOT jump
+    straight to cloud. Many facts are stable for months or years; we shouldn't
+    pay cloud dollars to re-verify them when the local model could answer.
+
+    Cloud is only used when local confidence is also low — matching the
+    original routing intent: escalate when UNCERTAIN, not when memory is
+    merely old.
+    """
+
+    def _seed_stale_memory(self, agent, question: str, answer: str) -> None:
+        """Insert a memory entry and backdate it past the staleness threshold."""
+        from datetime import datetime, timedelta, timezone
+
+        emb = agent._embed_client.embed(question)
+        entry = agent.memory.insert(NewKnowledgeEntry(
+            content=answer,
+            question=question,
+            source="cloud_escalation",
+            confidence=0.9,
+            embedding=emb.tolist(),
+            answer_embedding=emb.tolist(),
+        ))
+        # Backdate the entry so it counts as stale.
+        old_timestamp = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        agent._conn.execute(
+            "UPDATE knowledge_entries SET created_at = ? WHERE id = ?",
+            (old_timestamp, entry.id),
+        )
+        agent._conn.commit()
+
+    def test_stale_memory_with_confident_local_answers_locally(self, agent_with_mocks):
+        """Stale memory + confident local model → use local, skip cloud.
+
+        When the memory hit is old but the local model is confident it knows
+        the answer, we should trust local. No cloud escalation needed.
+        """
+        agent = agent_with_mocks
+        # Seed a stale memory entry (30 days old, threshold is 7).
+        self._seed_stale_memory(agent, "What is the capital of France?", "Paris.")
+        # Local client returns high-confidence answer (default fixture has avg_logprob=-0.13).
+
+        resp = agent.query("What is the capital of France?")
+
+        assert resp.routed_to == "local", (
+            f"Expected local route (confident local answer), got {resp.routed_to}. "
+            "Stale memory should fall through to local, not escalate to cloud."
+        )
+        assert resp.cost_usd == 0.0
+        agent._cloud_client.chat.assert_not_called()
+
+    def test_stale_memory_with_uncertain_local_escalates(self, agent_with_mocks):
+        """Stale memory + uncertain local model → escalate to cloud.
+
+        This is the case where escalation is actually warranted: the stored
+        answer is old AND the local model isn't confident enough to replace it.
+        """
+        agent = agent_with_mocks
+        self._seed_stale_memory(agent, "What's the latest OpenAI model?", "gpt-4o.")
+        # Make local model uncertain.
+        agent._local_client.chat_with_logprobs.return_value = ChatResponseWithLogprobs(
+            content="I'm not sure, maybe gpt-4?",
+            model="qwen2.5:7b",
+            avg_logprob=-3.0,  # very low confidence
+            logprobs=[-3.0],
+            top_logprobs_by_position=[],
+        )
+
+        resp = agent.query("What's the latest OpenAI model?")
+
+        assert resp.routed_to == "cloud"
+        agent._cloud_client.chat.assert_called_once()
+
+    def test_fresh_memory_still_returns_directly(self, agent_with_mocks):
+        """Fresh memory (not stale) → return stored answer directly, no generation.
+
+        This ensures the bugfix doesn't break the existing memory-hit fast path.
+        """
+        agent = agent_with_mocks
+        # Seed a fresh memory entry (no backdating).
+        emb = agent._embed_client.embed("What is the capital of France?")
+        agent.memory.insert(NewKnowledgeEntry(
+            content="Paris.",
+            question="What is the capital of France?",
+            source="cloud_escalation",
+            confidence=0.9,
+            embedding=emb.tolist(),
+            answer_embedding=emb.tolist(),
+        ))
+
+        resp = agent.query("What is the capital of France?")
+
+        assert resp.routed_to == "memory"
+        assert resp.cost_usd == 0.0
+        # Neither local nor cloud should be called — direct memory hit.
+        agent._local_client.chat_with_logprobs.assert_not_called()
+        agent._cloud_client.chat.assert_not_called()
+
+    def test_stale_memory_no_cloud_answers_locally(self, agent_with_mocks):
+        """Stale memory + no cloud configured → fall through to local regardless.
+
+        Without a cloud option, falling through to local is the only sensible
+        behavior (certainly better than the old "go to cloud" branch which
+        would have crashed on None).
+        """
+        agent = agent_with_mocks
+        agent._cloud_client = None
+        self._seed_stale_memory(agent, "What is the capital of France?", "Paris.")
+
+        resp = agent.query("What is the capital of France?")
+
+        assert resp.routed_to == "local"
+        agent._local_client.chat_with_logprobs.assert_called_once()

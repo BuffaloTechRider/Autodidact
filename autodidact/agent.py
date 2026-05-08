@@ -213,32 +213,39 @@ class Agent:
             age_days = self._entry_age_days(entry)
             is_stale = age_days > self.staleness_days
 
-            if is_stale and self._cloud_client:
-                # Re-verify stale memory with cloud.
-                logger.info("Memory hit is stale (%.1f days old); re-verifying with cloud", age_days)
-                return self._escalate_to_cloud(question, context, memory_hits, started, _emit)
+            if is_stale:
+                # Stale memory: fall through to Stage 2 (local generation).
+                # Many facts are stable for months or years; escalating every
+                # stale hit wastes cloud dollars on queries local can handle.
+                # Only escalate if local is ALSO uncertain — matching the
+                # original routing intent: escalate when uncertain, not when
+                # memory is merely old.
+                logger.info(
+                    "Memory hit is stale (%.1f days old); falling through to local",
+                    age_days,
+                )
+            else:
+                _emit({
+                    "type": "memory_hit",
+                    "similarity": best_hit.score,
+                    "memory_source": entry.question,
+                    "age_days": age_days,
+                })
 
-            _emit({
-                "type": "memory_hit",
-                "similarity": best_hit.score,
-                "memory_source": entry.question,
-                "age_days": age_days,
-            })
-
-            latency = _elapsed_ms(started)
-            self._record_query("memory", 0.0, best_hit.score, latency, question=question)
-            self._append_history(question, entry.content)
-            return QueryResponse(
-                answer=entry.content,
-                routed_to="memory",
-                confidence=best_hit.score,
-                cost_usd=0.0,
-                learned=False,
-                latency_ms=latency,
-                memory_source=entry.question,
-                memory_age_days=age_days,
-                stale=False,
-            )
+                latency = _elapsed_ms(started)
+                self._record_query("memory", 0.0, best_hit.score, latency, question=question)
+                self._append_history(question, entry.content)
+                return QueryResponse(
+                    answer=entry.content,
+                    routed_to="memory",
+                    confidence=best_hit.score,
+                    cost_usd=0.0,
+                    learned=False,
+                    latency_ms=latency,
+                    memory_source=entry.question,
+                    memory_age_days=age_days,
+                    stale=False,
+                )
 
         # ── Stage 2: Generate locally ────────────────────────────
         if self._local_client is None:
