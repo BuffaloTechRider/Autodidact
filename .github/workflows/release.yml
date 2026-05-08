@@ -1,0 +1,75 @@
+name: Release to PyPI
+
+# Triggers a build + PyPI publish on any version tag push (v1.0.0, v1.0.1, etc.).
+#
+# Setup (one-time, on the PyPI side):
+#   1. Create the autodidact project on https://pypi.org
+#   2. Add a Trusted Publisher pointing at this repo:
+#      - owner: BuffaloTechRider
+#      - repository: Autodidact
+#      - workflow: release.yml
+#      - environment: pypi
+#   3. Done — no API tokens required.
+#
+# To ship a release:
+#   git tag v1.0.0
+#   git push origin v1.0.0
+#
+# The workflow will build, validate, and publish.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build sdist and wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tooling
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build twine
+
+      - name: Build sdist and wheel
+        run: python -m build
+
+      - name: Validate artifacts
+        run: twine check dist/*
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-dists
+          path: dist/
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/autodidact
+    permissions:
+      # OIDC trusted publishing — no secrets stored in the repo.
+      id-token: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-dists
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
