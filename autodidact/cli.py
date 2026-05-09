@@ -206,7 +206,13 @@ def init(
     # Smoke test.
     _run_smoke_test(config)
 
-    console.print("\n✅ [bold green]Ready![/bold green] Run [cyan]autodidact chat[/cyan] to start.")
+    console.print()
+    console.print("✅ [bold green]Ready![/bold green] Here's what to do next:")
+    console.print()
+    console.print("  [cyan]autodidact learn <path>[/cyan]   Seed the agent with your docs or codebase")
+    console.print("  [cyan]autodidact chat[/cyan]           Start an interactive chat with the agent")
+    console.print()
+    console.print("  Run [cyan]autodidact --help[/cyan] for the full command list.")
 
 
 def _init_with_ollama(mode: str) -> dict:
