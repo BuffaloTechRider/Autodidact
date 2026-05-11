@@ -72,6 +72,7 @@ class QueryResponse:
     memory_source: Optional[str] = None  # the past question it recalled, if any
     memory_age_days: Optional[float] = None  # how old the memory entry is
     stale: bool = False  # True if memory answer is older than staleness threshold
+    escalated_on_refusal: bool = False  # True if local refused and we forced cloud
 
 
 @dataclass
@@ -306,8 +307,15 @@ class Agent:
         )
         confidence = self._compute_confidence(local_resp)
 
-        if confidence >= self.confidence_threshold:
-            # Local is confident — return its answer.
+        # Refusal override: the local model can hedge or ask for clarification
+        # with highly confident tokens, which fools logprob-based routing.
+        # When the content looks like a voluntary surrender, escalate regardless
+        # of confidence — a hedge answered by cloud is strictly better than a
+        # confident hedge returned to the user.
+        refused = _looks_like_refusal(local_resp.content)
+
+        if confidence >= self.confidence_threshold and not refused:
+            # Local is confident AND didn't refuse — return its answer.
             _emit({"type": "local_done", "confidence": confidence})
             latency = _elapsed_ms(started)
             cost = 0.0
@@ -338,7 +346,10 @@ class Agent:
                 latency_ms=latency,
             )
 
-        return self._escalate_to_cloud(question, context, memory_hits, started, _emit)
+        return self._escalate_to_cloud(
+            question, context, memory_hits, started, _emit,
+            escalated_on_refusal=refused,
+        )
 
     def correct(self, question: str) -> QueryResponse:
         """User says the last answer was wrong. Re-escalate to cloud and learn.
@@ -431,6 +442,8 @@ class Agent:
         memory_hits: list[ScoredKnowledgeEntry],
         started: float,
         emit: Callable[[dict], None] = lambda e: None,
+        *,
+        escalated_on_refusal: bool = False,
     ) -> QueryResponse:
         """Send to cloud, learn from the answer."""
         assert self._cloud_client is not None
@@ -464,6 +477,7 @@ class Agent:
             cost_usd=cost,
             learned=learned,
             latency_ms=latency,
+            escalated_on_refusal=escalated_on_refusal,
         )
 
     def _learn(self, question: str, answer: str) -> tuple[bool, int]:
@@ -727,3 +741,61 @@ def _apply_bedrock_auth(config_kwargs: dict, bedrock_cfg: dict) -> None:
 
 def _elapsed_ms(started: float) -> int:
     return int((time.perf_counter() - started) * 1000)
+
+
+# ── Refusal detector ───────────────────────────────────────────────
+#
+# Local models emit hedges and clarifying questions with very confident tokens,
+# which tricks the logprob-based confidence score. This detector catches those
+# voluntary-surrender responses so the router can override and escalate.
+#
+# Principle: only flag phrases that *explicitly* signal the model believes it
+# can't answer. A factual statement that happens to mention "I don't know"
+# in a quote is rare enough we can live with a small false-positive rate.
+
+_REFUSAL_MARKERS = (
+    # No real-time / live data
+    "i don't have real-time",
+    "i do not have real-time",
+    "i don't have access to real-time",
+    "i don't have current",
+    "i can't access",
+    "i cannot access",
+    "i can't browse",
+    "i cannot browse",
+    "i'm unable to",
+    "i am unable to",
+    "i don't have the ability",
+    "i do not have the ability",
+    # Training cutoff hedges
+    "as of my last update",
+    "as of my knowledge cutoff",
+    "my knowledge is limited to",
+    "my training data",
+    # Explicit "I don't know"
+    "i don't know",
+    "i do not know",
+    "i'm not sure what",
+    "i am not sure what",
+    # Clarification requests (model is punting the question back)
+    "did you mean",
+    "are you referring to",
+    "could you clarify",
+    "can you clarify",
+    "please clarify",
+    "there might be a typo",
+)
+
+
+def _looks_like_refusal(text: str) -> bool:
+    """Return True if the text reads like a voluntary surrender from the model.
+
+    Catches hedges ('I don't have real-time data'), clarification requests
+    ('Did you mean X?'), and explicit I-don't-knows. Case-insensitive,
+    substring-based — deliberately simple; false positives are cheap (one
+    extra cloud call) but false negatives ship bad answers to users.
+    """
+    if not text:
+        return False
+    lowered = text.lower()
+    return any(marker in lowered for marker in _REFUSAL_MARKERS)
