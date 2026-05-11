@@ -339,7 +339,29 @@ def _prompt_single_cloud_provider(*, slot: str) -> dict:
     """
     providers = list_cloud_providers()
     console.print("  Providers: " + ", ".join(providers))
-    provider = typer.prompt("  Provider", default="openai").strip().lower()
+
+    # Validate provider — offer closest match for typos.
+    while True:
+        provider = typer.prompt("  Provider", default="openai").strip().lower()
+        if provider in providers:
+            break
+        import difflib
+        suggestions = difflib.get_close_matches(provider, providers, n=3, cutoff=0.4)
+        if suggestions:
+            suggestion_str = ", ".join(f"[cyan]{s}[/cyan]" for s in suggestions)
+            console.print(
+                f"  [yellow]Unknown provider '[cyan]{provider}[/cyan]'.[/yellow] "
+                f"Did you mean: {suggestion_str}?"
+            )
+        else:
+            console.print(
+                f"  [yellow]Unknown provider '[cyan]{provider}[/cyan]'.[/yellow] "
+                f"Pick one of: {', '.join(providers)}."
+            )
+        if typer.confirm(f"  Use '{provider}' anyway as a custom provider?", default=False):
+            break
+        # Otherwise: loop and re-prompt.
+
     preset = get_cloud_preset(provider)
 
     if provider == "bedrock":
@@ -348,18 +370,45 @@ def _prompt_single_cloud_provider(*, slot: str) -> dict:
     return _prompt_openai_compat_config(provider, preset, slot)
 
 
-def _prompt_openai_compat_config(provider: str, preset: dict, slot: str) -> dict:
-    """Prompt for an OpenAI-compatible provider: API key + model."""
-    api_key = typer.prompt("  API key")
+def _prompt_model_name(preset: dict, *, slot: str) -> str:
+    """Prompt for a model name, warning if it's not in the preset list.
 
-    # Pick a model: default to cheap/expensive based on slot.
+    Allows users to enter custom models (fine-tunes, newer models the preset
+    doesn't know about) while catching typos in known model names.
+    """
     default_model = preset.get("default_cheap", "")
     if slot in ("cloud", "expensive"):
         default_model = preset.get("default_expensive", "") or default_model
     models = preset.get("models", [])
     if models:
         console.print("  Available models: " + ", ".join(models))
-    model = typer.prompt("  Model", default=default_model)
+    model = typer.prompt("  Model", default=default_model).strip()
+
+    if models and model not in models:
+        import difflib
+        suggestions = difflib.get_close_matches(model, models, n=3, cutoff=0.5)
+        if suggestions:
+            suggestion_str = ", ".join(f"[cyan]{s}[/cyan]" for s in suggestions)
+            console.print(
+                f"  [yellow]'{model}' is not in the known model list. "
+                f"Did you mean: {suggestion_str}?[/yellow]"
+            )
+            if not typer.confirm(f"  Use '{model}' anyway?", default=False):
+                # Re-prompt recursively so the user can pick again.
+                return _prompt_model_name(preset, slot=slot)
+        else:
+            console.print(
+                f"  [yellow]'{model}' is not in the known model list — "
+                f"using as a custom model name.[/yellow]"
+            )
+
+    return model
+
+
+def _prompt_openai_compat_config(provider: str, preset: dict, slot: str) -> dict:
+    """Prompt for an OpenAI-compatible provider: API key + model."""
+    api_key = typer.prompt("  API key")
+    model = _prompt_model_name(preset, slot=slot)
 
     return {
         "provider": provider,
@@ -398,14 +447,7 @@ def _prompt_bedrock_config(preset: dict, slot: str) -> dict:
     region = typer.prompt("  AWS region", default="us-west-2")
     bedrock_cfg["region"] = region
 
-    # Model selection.
-    default_model = preset.get("default_cheap", "")
-    if slot in ("cloud", "expensive"):
-        default_model = preset.get("default_expensive", "") or default_model
-    models = preset.get("models", [])
-    if models:
-        console.print("  Available models: " + ", ".join(models))
-    model = typer.prompt("  Model", default=default_model)
+    model = _prompt_model_name(preset, slot=slot)
 
     return {
         "provider": "bedrock",
@@ -417,14 +459,68 @@ def _prompt_bedrock_config(preset: dict, slot: str) -> dict:
 
 
 def _run_smoke_test(config: dict) -> None:
-    """Run a quick smoke test to verify models are reachable."""
+    """Run a quick smoke test to verify the configured models are reachable.
+
+    Categorizes common errors and gives actionable next steps — better than
+    surfacing raw tracebacks.
+    """
     try:
         agent = _agent_from_config(config)
         console.print("\nRunning smoke test...", style="dim")
         resp = agent.query("What is 2+2?")
-        console.print(f"  Local test: {resp.routed_to} — OK", style="dim")
+        console.print(f"  ✓ Smoke test: routed to [cyan]{resp.routed_to}[/cyan]", style="dim")
     except Exception as e:
-        console.print(f"  Smoke test warning: {e}", style="yellow")
+        _render_smoke_test_error(e, config)
+
+
+def _render_smoke_test_error(exc: Exception, config: dict) -> None:
+    """Print a human-friendly diagnostic for a smoke-test failure."""
+    message = str(exc)
+    lower = message.lower()
+
+    console.print()
+    console.print("[yellow]⚠ Smoke test failed.[/yellow]", style="bold")
+    console.print(f"  Error: {message[:300]}", style="dim")
+    console.print()
+
+    hints: list[str] = []
+
+    if "ollama" in lower and ("connection" in lower or "refused" in lower or "timeout" in lower):
+        hints.append("Ollama doesn't seem to be running. Start it with: [cyan]ollama serve[/cyan]")
+    if "model" in lower and ("not found" in lower or "404" in lower):
+        local_model = config.get("local", {}).get("model", "")
+        if local_model:
+            hints.append(
+                f"The model [cyan]{local_model}[/cyan] isn't pulled. "
+                f"Run: [cyan]ollama pull {local_model}[/cyan]"
+            )
+    if "api_key" in lower or "unauthorized" in lower or "401" in lower or "403" in lower:
+        hints.append(
+            "API key may be invalid or missing. Re-check the key in your config, "
+            "or set the provider's env var (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.)."
+        )
+    if "credential" in lower or "nocredentialserror" in lower:
+        hints.append(
+            "AWS credentials not found. Set AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY, "
+            "configure [cyan]aws configure[/cyan], or re-run init and pick IAM User auth mode."
+        )
+    if "validationexception" in lower:
+        hints.append(
+            "Bedrock rejected the model ID. Check your model name matches a real Bedrock "
+            "model ID (e.g. [cyan]anthropic.claude-sonnet-4-5-20250929-v1:0[/cyan])."
+        )
+
+    if hints:
+        console.print("  Likely cause:", style="bold")
+        for hint in hints:
+            console.print(f"    • {hint}")
+    else:
+        console.print(
+            "  Your config was written but the agent could not reach any model. "
+            "Check your settings and run [cyan]autodidact query \"hello\"[/cyan] to retry.",
+            style="dim",
+        )
+    console.print()
 
 
 @app.command()
