@@ -33,6 +33,7 @@ from autodidact.document_store import DocumentStore, ScoredChunk
 from autodidact.knowledge_store import KnowledgeStore, ScoredKnowledgeEntry
 from autodidact.learning_extractor import ExtractionResult, LearningExtractor
 from autodidact.llm_client import ChatMessage, ChatResponseWithLogprobs, LLMClient, LLMConfig
+from autodidact.signals.grounded_self_assessment import SelfAssessment
 from autodidact.types import AutodidactConfig, NewKnowledgeEntry
 
 # Type alias for progress callbacks.
@@ -72,6 +73,9 @@ class QueryResponse:
     memory_source: Optional[str] = None  # the past question it recalled, if any
     memory_age_days: Optional[float] = None  # how old the memory entry is
     stale: bool = False  # True if memory answer is older than staleness threshold
+    escalated_on_refusal: bool = False  # True if local refused and we forced cloud
+    escalated_on_gsa: bool = False  # True if GSA pre-gate vetoed local
+    gsa_p_yes: Optional[float] = None  # p_yes from the pre-local self-assessment probe
 
 
 @dataclass
@@ -117,9 +121,13 @@ class Agent:
         db_path: str = "~/.autodidact/memory.db",
         confidence_threshold: float = 0.7,
         staleness_days: float = MEMORY_STALENESS_DAYS,
+        gsa_enabled: bool = True,
+        gsa_threshold: float = 0.5,
     ) -> None:
         self.confidence_threshold = confidence_threshold
         self.staleness_days = staleness_days
+        self.gsa_enabled = gsa_enabled
+        self.gsa_threshold = gsa_threshold
 
         # Expand ~ in db_path and ensure parent dir exists.
         self._db_path = str(Path(db_path).expanduser())
@@ -194,6 +202,10 @@ class Agent:
         # or set by the caller directly. Retrieved alongside memory at query
         # time with different prompt framing.
         self.documents: Optional[DocumentStore] = None
+
+        # GSA (grounded self-assessment) probe — runs before local generation
+        # when enabled. Built lazily on first use so tests can patch it.
+        self._gsa: Optional[SelfAssessment] = None
 
     # ── Public API ────────────────────────────────────────────────
 
@@ -289,6 +301,42 @@ class Agent:
                     stale=False,
                 )
 
+        # ── Stage 1.5: GSA pre-gate ──────────────────────────────
+        # Ask the local model itself: "can you answer this?" before spending
+        # time generating a full response. If it self-reports NO with high
+        # probability, skip local and escalate directly. This catches the
+        # class of failures where the model would fabricate a plausible-
+        # sounding answer (high logprobs) to a question it has no real
+        # knowledge of — logprob-based confidence can't see the hallucination
+        # but a separate Y/N self-probe often can.
+        gsa_p_yes: Optional[float] = None
+        # Tolerate agents built via Agent.__new__ in older tests that don't
+        # set the GSA attrs. getattr defaults match __init__ defaults.
+        gsa_enabled = getattr(self, "gsa_enabled", True)
+        gsa_threshold = getattr(self, "gsa_threshold", 0.5)
+        if (
+            gsa_enabled
+            and self._local_client is not None
+            and self._cloud_client is not None
+        ):
+            try:
+                if getattr(self, "_gsa", None) is None:
+                    self._gsa = SelfAssessment(self._local_client)
+                gsa_result = self._gsa.compute(question, retrieved_hits=memory_hits)
+                gsa_p_yes = gsa_result.p_yes
+                if gsa_p_yes < gsa_threshold:
+                    # Model self-reports it can't answer — skip local entirely.
+                    resp = self._escalate_to_cloud(
+                        question, context, memory_hits, started, _emit,
+                    )
+                    resp.escalated_on_gsa = True
+                    resp.gsa_p_yes = gsa_p_yes
+                    return resp
+            except Exception as e:
+                # GSA is a best-effort signal. A probe failure must not block
+                # the actual query — fall through to the normal path.
+                logger.warning("GSA probe failed, skipping gate: %s", e)
+
         # ── Stage 2: Generate locally ────────────────────────────
         if self._local_client is None:
             # No local model — go straight to cloud.
@@ -306,8 +354,15 @@ class Agent:
         )
         confidence = self._compute_confidence(local_resp)
 
-        if confidence >= self.confidence_threshold:
-            # Local is confident — return its answer.
+        # Refusal override: the local model can hedge or ask for clarification
+        # with highly confident tokens, which fools logprob-based routing.
+        # When the content looks like a voluntary surrender, escalate regardless
+        # of confidence — a hedge answered by cloud is strictly better than a
+        # confident hedge returned to the user.
+        refused = _looks_like_refusal(local_resp.content)
+
+        if confidence >= self.confidence_threshold and not refused:
+            # Local is confident AND didn't refuse — return its answer.
             _emit({"type": "local_done", "confidence": confidence})
             latency = _elapsed_ms(started)
             cost = 0.0
@@ -320,6 +375,7 @@ class Agent:
                 cost_usd=cost,
                 learned=False,
                 latency_ms=latency,
+                gsa_p_yes=gsa_p_yes,
             )
 
         # ── Stage 3: Escalate to cloud ───────────────────────────
@@ -336,9 +392,15 @@ class Agent:
                 cost_usd=0.0,
                 learned=False,
                 latency_ms=latency,
+                gsa_p_yes=gsa_p_yes,
             )
 
-        return self._escalate_to_cloud(question, context, memory_hits, started, _emit)
+        resp = self._escalate_to_cloud(
+            question, context, memory_hits, started, _emit,
+            escalated_on_refusal=refused,
+        )
+        resp.gsa_p_yes = gsa_p_yes
+        return resp
 
     def correct(self, question: str) -> QueryResponse:
         """User says the last answer was wrong. Re-escalate to cloud and learn.
@@ -431,6 +493,8 @@ class Agent:
         memory_hits: list[ScoredKnowledgeEntry],
         started: float,
         emit: Callable[[dict], None] = lambda e: None,
+        *,
+        escalated_on_refusal: bool = False,
     ) -> QueryResponse:
         """Send to cloud, learn from the answer."""
         assert self._cloud_client is not None
@@ -464,6 +528,7 @@ class Agent:
             cost_usd=cost,
             learned=learned,
             latency_ms=latency,
+            escalated_on_refusal=escalated_on_refusal,
         )
 
     def _learn(self, question: str, answer: str) -> tuple[bool, int]:
@@ -727,3 +792,61 @@ def _apply_bedrock_auth(config_kwargs: dict, bedrock_cfg: dict) -> None:
 
 def _elapsed_ms(started: float) -> int:
     return int((time.perf_counter() - started) * 1000)
+
+
+# ── Refusal detector ───────────────────────────────────────────────
+#
+# Local models emit hedges and clarifying questions with very confident tokens,
+# which tricks the logprob-based confidence score. This detector catches those
+# voluntary-surrender responses so the router can override and escalate.
+#
+# Principle: only flag phrases that *explicitly* signal the model believes it
+# can't answer. A factual statement that happens to mention "I don't know"
+# in a quote is rare enough we can live with a small false-positive rate.
+
+_REFUSAL_MARKERS = (
+    # No real-time / live data
+    "i don't have real-time",
+    "i do not have real-time",
+    "i don't have access to real-time",
+    "i don't have current",
+    "i can't access",
+    "i cannot access",
+    "i can't browse",
+    "i cannot browse",
+    "i'm unable to",
+    "i am unable to",
+    "i don't have the ability",
+    "i do not have the ability",
+    # Training cutoff hedges
+    "as of my last update",
+    "as of my knowledge cutoff",
+    "my knowledge is limited to",
+    "my training data",
+    # Explicit "I don't know"
+    "i don't know",
+    "i do not know",
+    "i'm not sure what",
+    "i am not sure what",
+    # Clarification requests (model is punting the question back)
+    "did you mean",
+    "are you referring to",
+    "could you clarify",
+    "can you clarify",
+    "please clarify",
+    "there might be a typo",
+)
+
+
+def _looks_like_refusal(text: str) -> bool:
+    """Return True if the text reads like a voluntary surrender from the model.
+
+    Catches hedges ('I don't have real-time data'), clarification requests
+    ('Did you mean X?'), and explicit I-don't-knows. Case-insensitive,
+    substring-based — deliberately simple; false positives are cheap (one
+    extra cloud call) but false negatives ship bad answers to users.
+    """
+    if not text:
+        return False
+    lowered = text.lower()
+    return any(marker in lowered for marker in _REFUSAL_MARKERS)

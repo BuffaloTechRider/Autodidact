@@ -76,19 +76,23 @@ PROMPT_VERSION_V2 = "gsa-v2-confidence"
 # model cannot distinguish "retrieval was run and returned nothing strong"
 # from "retrieval was never attempted."
 BARE_PROMPT_TEMPLATE = (
-    "The user has asked the following question:\n"
+    "Question from the user:\n"
     "{query}\n\n"
-    "Are you confident you can answer this question correctly? "
+    "Do you have specific, reliable knowledge to answer this question?"
+    "Answering NO when uncertain is the right choice."
+    "The user would rather get a cloud-backed answer than a confidently-wrong local one."
     "Respond with exactly one token: YES or NO."
 )
 
 # The with-retrieval prompt. Used by v3 when ≥1 hit clears min_similarity.
 WITH_RETRIEVAL_PROMPT_TEMPLATE = (
-    "The user has asked the following question:\n"
+    "Question from the user:\n"
     "{query}\n\n"
     "Here is what you recall from your knowledge base:\n"
     "{hits_block}\n\n"
-    "Are you confident you can answer this question correctly? "
+    "Do you have specific, reliable knowledge to answer this question?"
+    "Answering NO when uncertain is the right choice."
+    "The user would rather get a cloud-backed answer than a confidently-wrong local one."
     "Respond with exactly one token: YES or NO."
 )
 
