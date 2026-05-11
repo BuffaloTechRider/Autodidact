@@ -108,9 +108,11 @@ class Agent:
         cloud_base_url: Optional[str] = None,
         cloud_api_key_env: Optional[str] = None,
         cloud_region: str = "us-west-2",
+        cloud_bedrock: Optional[dict] = None,
         local_base_url: Optional[str] = None,
         local_api_key_env: Optional[str] = None,
         local_region: str = "us-west-2",
+        local_bedrock: Optional[dict] = None,
         embedding_model: Optional[str] = None,
         db_path: str = "~/.autodidact/memory.db",
         confidence_threshold: float = 0.7,
@@ -159,6 +161,8 @@ class Agent:
                 local_config_kwargs["api_key_env"] = local_api_key_env or "OPENAI_API_KEY"
             elif provider == "bedrock":
                 local_config_kwargs["region"] = local_region
+                if local_bedrock:
+                    _apply_bedrock_auth(local_config_kwargs, local_bedrock)
             self._local_client = LLMClient(LLMConfig(**local_config_kwargs))
 
         # Cloud model client.
@@ -172,6 +176,8 @@ class Agent:
                 config_kwargs["api_key_env"] = cloud_api_key_env or "OPENAI_API_KEY"
             elif provider == "bedrock":
                 config_kwargs["region"] = cloud_region
+                if cloud_bedrock:
+                    _apply_bedrock_auth(config_kwargs, cloud_bedrock)
             self._cloud_client = LLMClient(LLMConfig(**config_kwargs))
 
         # Embedding client — reuse local client if available, else cloud.
@@ -691,6 +697,32 @@ def _parse_model_string(model_str: str, default_provider: str = "ollama") -> tup
         # Treat unknown prefixes as part of the model name (e.g., "qllama/bge-large").
         return default_provider, model_str
     return default_provider, model_str
+
+
+def _apply_bedrock_auth(config_kwargs: dict, bedrock_cfg: dict) -> None:
+    """Translate a Bedrock config dict from YAML into LLMConfig kwargs.
+
+    Input shape (as written by the setup wizard):
+        {"auth_mode": "iam_user",
+         "access_key_id": "...", "secret_access_key": "...",
+         "session_token": "...",              # optional
+         "region": "us-west-2"}
+        {"auth_mode": "api_key", "api_key": "bedrock-...", "region": "..."}
+        {"auth_mode": "default", "region": "..."}
+
+    Output: kwargs that go straight into LLMConfig(...).
+    """
+    auth_mode = bedrock_cfg.get("auth_mode", "default")
+    config_kwargs["bedrock_auth_mode"] = auth_mode
+    if "region" in bedrock_cfg and bedrock_cfg["region"]:
+        config_kwargs["region"] = bedrock_cfg["region"]
+    if auth_mode == "iam_user":
+        config_kwargs["bedrock_access_key_id"] = bedrock_cfg.get("access_key_id")
+        config_kwargs["bedrock_secret_access_key"] = bedrock_cfg.get("secret_access_key")
+        if bedrock_cfg.get("session_token"):
+            config_kwargs["bedrock_session_token"] = bedrock_cfg["session_token"]
+    elif auth_mode == "api_key":
+        config_kwargs["bedrock_api_key"] = bedrock_cfg.get("api_key")
 
 
 def _elapsed_ms(started: float) -> int:

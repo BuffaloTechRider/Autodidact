@@ -75,7 +75,9 @@ class TestQueryCommand:
         MockAgent.return_value = mock_agent
 
         runner.invoke(app, ["query", "What is the capital of France?"])
-        mock_agent.query.assert_called_once_with("What is the capital of France?")
+        mock_agent.query.assert_called_once()
+        call_args = mock_agent.query.call_args
+        assert call_args.args[0] == "What is the capital of France?"
 
 
 # ── autodidact savings ─────────────────────────────────────────────
@@ -256,7 +258,9 @@ class TestChatCommand:
 
         result = runner.invoke(app, ["chat"], input="What is Python?\nquit\n")
         assert result.exit_code == 0
-        mock_agent.query.assert_called_once_with("What is Python?")
+        mock_agent.query.assert_called_once()
+        call_args = mock_agent.query.call_args
+        assert call_args.args[0] == "What is Python?"
 
 
 # ── autodidact learn ──────────────────────────────────────────────

@@ -42,6 +42,16 @@ class LLMConfig(BaseModel):
     base_url: Optional[str] = None          # required for 'openai' provider (points at vLLM, LM Studio, OpenAI, etc.)
     api_key_env: Optional[str] = None       # env var name for API key, e.g. "OPENAI_API_KEY"; None = no auth
     region: str = "us-west-2"               # only meaningful for Bedrock
+    # Bedrock auth. "default" uses the boto3 default credential chain (env
+    # vars, ~/.aws/credentials, SSO, IMDS, etc. — what existing users had
+    # before these fields were added). "iam_user" passes explicit access
+    # key + secret to boto3. "api_key" uses a short-lived Bedrock API key
+    # via bearer-token auth (added by AWS in 2025).
+    bedrock_auth_mode: Literal["default", "iam_user", "api_key"] = "default"
+    bedrock_access_key_id: Optional[str] = None
+    bedrock_secret_access_key: Optional[str] = None
+    bedrock_session_token: Optional[str] = None
+    bedrock_api_key: Optional[str] = None
     timeout_seconds: int = 60
     max_retries: int = 6
 
@@ -464,9 +474,38 @@ class LLMClient:
             connect_timeout=self.config.timeout_seconds,
             retries={"max_attempts": 1, "mode": "standard"},  # we handle retries ourselves
         )
-        self._bedrock_client = boto3.client(
-            "bedrock-runtime", region_name=self.config.region, config=boto_config
-        )
+
+        # Choose credentials based on bedrock_auth_mode.
+        client_kwargs: dict = {
+            "service_name": "bedrock-runtime",
+            "region_name": self.config.region,
+            "config": boto_config,
+        }
+        mode = self.config.bedrock_auth_mode
+        if mode == "iam_user":
+            # Explicit credentials — bypass the default credential chain.
+            if not (self.config.bedrock_access_key_id and self.config.bedrock_secret_access_key):
+                raise LLMClientError(
+                    "bedrock_auth_mode='iam_user' requires bedrock_access_key_id "
+                    "and bedrock_secret_access_key in the config."
+                )
+            client_kwargs["aws_access_key_id"] = self.config.bedrock_access_key_id
+            client_kwargs["aws_secret_access_key"] = self.config.bedrock_secret_access_key
+            if self.config.bedrock_session_token:
+                client_kwargs["aws_session_token"] = self.config.bedrock_session_token
+        elif mode == "api_key":
+            # Bedrock API key mode: AWS sets the AWS_BEARER_TOKEN_BEDROCK env
+            # var and boto3's credential provider picks it up automatically.
+            # See https://docs.aws.amazon.com/bedrock/latest/userguide/api-keys.html
+            if not self.config.bedrock_api_key:
+                raise LLMClientError(
+                    "bedrock_auth_mode='api_key' requires bedrock_api_key in the config."
+                )
+            os.environ["AWS_BEARER_TOKEN_BEDROCK"] = self.config.bedrock_api_key
+        # "default" mode: no-op — boto3 uses its standard credential chain
+        # (env vars, ~/.aws/credentials, SSO, IMDS, role assumption, etc.).
+
+        self._bedrock_client = boto3.client(**client_kwargs)
         return self._bedrock_client
 
     def _bedrock_transient_exceptions(self) -> tuple[type, ...]:

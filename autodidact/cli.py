@@ -31,15 +31,45 @@ from autodidact.setup_wizard import (
 )
 from autodidact.thought_renderer import ThoughtRenderer
 
-app = typer.Typer(help="Autodidact — self-learning AI agent")
-memory_app = typer.Typer(help="Knowledge store commands")
-app.add_typer(memory_app, name="memory")
-
 console = Console()
 
-# ── Config loading ─────────────────────────────────────────────────
-
 _DEFAULT_CONFIG_PATH = Path("~/.autodidact/config.yaml").expanduser()
+
+app = typer.Typer(
+    help="Autodidact — self-learning AI agent",
+    invoke_without_command=True,
+    no_args_is_help=False,  # we'll handle the no-args case ourselves
+)
+memory_app = typer.Typer(help="Knowledge store commands")
+
+app.add_typer(memory_app, name="memory")
+
+
+@app.callback()
+def _main(ctx: typer.Context) -> None:
+    """Show a quickstart hint on bare `autodidact` invocations."""
+    if ctx.invoked_subcommand is not None:
+        return
+    # User typed `autodidact` with no subcommand — welcome them.
+    console.print("[bold]Autodidact[/bold] — a self-evolving AI agent that learns like a new employee.")
+    console.print()
+    if _DEFAULT_CONFIG_PATH.exists():
+        console.print("Quick reference:")
+        console.print()
+        console.print("  [cyan]autodidact chat[/cyan]              Interactive chat")
+        console.print("  [cyan]autodidact learn <path>[/cyan]      Ingest docs / code")
+        console.print("  [cyan]autodidact savings[/cyan]           Cost savings report")
+        console.print("  [cyan]autodidact memory stats[/cyan]      Knowledge store summary")
+        console.print()
+        console.print("  [cyan]autodidact --help[/cyan]            Full command list")
+    else:
+        console.print("Get started:")
+        console.print()
+        console.print("  [cyan]autodidact init[/cyan]              Zero-friction setup wizard")
+        console.print()
+        console.print("Already set up elsewhere? Point at your config with [cyan]--config-path[/cyan].")
+
+# ── Config loading ─────────────────────────────────────────────────
 
 
 def _load_config(path: Path) -> dict:
@@ -79,6 +109,7 @@ def _agent_from_config(config: dict) -> Agent:
     local_model: Optional[str] = None
     local_base_url: Optional[str] = None
     local_api_key_env: Optional[str] = None
+    local_bedrock: Optional[dict] = None
 
     if local_model_name:
         if local_provider and local_provider != "ollama":
@@ -92,6 +123,9 @@ def _agent_from_config(config: dict) -> Agent:
             local_api_key = local_cfg.get("api_key")
             if local_api_key and local_api_key_env:
                 os.environ.setdefault(local_api_key_env, local_api_key)
+            # Bedrock uses its own auth config, not a generic API key.
+            if local_provider == "bedrock":
+                local_bedrock = local_cfg.get("bedrock")
         else:
             # Local+cloud or local-only: Ollama.
             local_model = f"ollama/{local_model_name}"
@@ -102,6 +136,7 @@ def _agent_from_config(config: dict) -> Agent:
     cloud_model: Optional[str] = None
     cloud_base_url: Optional[str] = None
     cloud_api_key_env: Optional[str] = None
+    cloud_bedrock: Optional[dict] = None
 
     if cloud_model_name:
         cloud_model = f"{cloud_provider}/{cloud_model_name}"
@@ -111,6 +146,8 @@ def _agent_from_config(config: dict) -> Agent:
         cloud_api_key = cloud_cfg.get("api_key")
         if cloud_api_key and cloud_api_key_env:
             os.environ.setdefault(cloud_api_key_env, cloud_api_key)
+        if cloud_provider == "bedrock":
+            cloud_bedrock = cloud_cfg.get("bedrock")
 
     # ── Common ─────────────────────────────────────────────────────
     embedding_model = local_cfg.get("embedding_model")
@@ -130,10 +167,14 @@ def _agent_from_config(config: dict) -> Agent:
         kwargs["local_base_url"] = local_base_url
     if local_api_key_env:
         kwargs["local_api_key_env"] = local_api_key_env
+    if local_bedrock:
+        kwargs["local_bedrock"] = local_bedrock
     if cloud_base_url:
         kwargs["cloud_base_url"] = cloud_base_url
     if cloud_api_key_env:
         kwargs["cloud_api_key_env"] = cloud_api_key_env
+    if cloud_bedrock:
+        kwargs["cloud_bedrock"] = cloud_bedrock
 
     agent = Agent(**kwargs)
 
@@ -206,7 +247,13 @@ def init(
     # Smoke test.
     _run_smoke_test(config)
 
-    console.print("\n✅ [bold green]Ready![/bold green] Run [cyan]autodidact chat[/cyan] to start.")
+    console.print()
+    console.print("✅ [bold green]Ready![/bold green] Here's what to do next:")
+    console.print()
+    console.print("  [cyan]autodidact learn <path>[/cyan]   Seed the agent with your docs or codebase")
+    console.print("  [cyan]autodidact chat[/cyan]           Start an interactive chat with the agent")
+    console.print()
+    console.print("  Run [cyan]autodidact --help[/cyan] for the full command list.")
 
 
 def _init_with_ollama(mode: str) -> dict:
@@ -248,6 +295,7 @@ def _init_with_ollama(mode: str) -> dict:
             cloud_model=cloud_cfg["model"],
             cloud_api_key=cloud_cfg["api_key"],
             cloud_base_url=cloud_cfg.get("base_url"),
+            cloud_bedrock=cloud_cfg.get("bedrock"),
         )
 
     return build_config(
@@ -271,10 +319,12 @@ def _init_cloud_to_cloud() -> dict:
         cheap_cloud_model=cheap["model"],
         cheap_cloud_api_key=cheap["api_key"],
         cheap_cloud_base_url=cheap.get("base_url"),
+        cheap_cloud_bedrock=cheap.get("bedrock"),
         expensive_cloud_provider=expensive["provider"],
         expensive_cloud_model=expensive["model"],
         expensive_cloud_api_key=expensive["api_key"],
         expensive_cloud_base_url=expensive.get("base_url"),
+        expensive_cloud_bedrock=expensive.get("bedrock"),
     )
 
 
@@ -283,22 +333,82 @@ def _prompt_single_cloud_provider(*, slot: str) -> dict:
 
     slot: 'cloud' / 'cheap' / 'expensive' — used only for prompt labeling
     and to decide which default model (cheap vs expensive) to pick.
+
+    Bedrock is handled separately — it uses AWS credentials, not a
+    generic API key, and supports multiple auth modes.
     """
     providers = list_cloud_providers()
     console.print("  Providers: " + ", ".join(providers))
-    provider = typer.prompt("  Provider", default="openai").strip().lower()
+
+    # Validate provider — offer closest match for typos.
+    while True:
+        provider = typer.prompt("  Provider", default="openai").strip().lower()
+        if provider in providers:
+            break
+        import difflib
+        suggestions = difflib.get_close_matches(provider, providers, n=3, cutoff=0.4)
+        if suggestions:
+            suggestion_str = ", ".join(f"[cyan]{s}[/cyan]" for s in suggestions)
+            console.print(
+                f"  [yellow]Unknown provider '[cyan]{provider}[/cyan]'.[/yellow] "
+                f"Did you mean: {suggestion_str}?"
+            )
+        else:
+            console.print(
+                f"  [yellow]Unknown provider '[cyan]{provider}[/cyan]'.[/yellow] "
+                f"Pick one of: {', '.join(providers)}."
+            )
+        if typer.confirm(f"  Use '{provider}' anyway as a custom provider?", default=False):
+            break
+        # Otherwise: loop and re-prompt.
+
     preset = get_cloud_preset(provider)
 
-    api_key = typer.prompt("  API key")
+    if provider == "bedrock":
+        return _prompt_bedrock_config(preset, slot)
 
-    # Pick a model: default to cheap/expensive based on slot.
+    return _prompt_openai_compat_config(provider, preset, slot)
+
+
+def _prompt_model_name(preset: dict, *, slot: str) -> str:
+    """Prompt for a model name, warning if it's not in the preset list.
+
+    Allows users to enter custom models (fine-tunes, newer models the preset
+    doesn't know about) while catching typos in known model names.
+    """
     default_model = preset.get("default_cheap", "")
     if slot in ("cloud", "expensive"):
         default_model = preset.get("default_expensive", "") or default_model
     models = preset.get("models", [])
     if models:
         console.print("  Available models: " + ", ".join(models))
-    model = typer.prompt("  Model", default=default_model)
+    model = typer.prompt("  Model", default=default_model).strip()
+
+    if models and model not in models:
+        import difflib
+        suggestions = difflib.get_close_matches(model, models, n=3, cutoff=0.5)
+        if suggestions:
+            suggestion_str = ", ".join(f"[cyan]{s}[/cyan]" for s in suggestions)
+            console.print(
+                f"  [yellow]'{model}' is not in the known model list. "
+                f"Did you mean: {suggestion_str}?[/yellow]"
+            )
+            if not typer.confirm(f"  Use '{model}' anyway?", default=False):
+                # Re-prompt recursively so the user can pick again.
+                return _prompt_model_name(preset, slot=slot)
+        else:
+            console.print(
+                f"  [yellow]'{model}' is not in the known model list — "
+                f"using as a custom model name.[/yellow]"
+            )
+
+    return model
+
+
+def _prompt_openai_compat_config(provider: str, preset: dict, slot: str) -> dict:
+    """Prompt for an OpenAI-compatible provider: API key + model."""
+    api_key = typer.prompt("  API key")
+    model = _prompt_model_name(preset, slot=slot)
 
     return {
         "provider": provider,
@@ -308,15 +418,109 @@ def _prompt_single_cloud_provider(*, slot: str) -> dict:
     }
 
 
+def _prompt_bedrock_config(preset: dict, slot: str) -> dict:
+    """Prompt for Bedrock: auth mode + region + model. No generic API key."""
+    console.print("  Bedrock auth mode:")
+    console.print("    1. IAM Role / default credential chain  (env vars, ~/.aws/credentials, SSO, IMDS)")
+    console.print("    2. IAM User  (paste aws_access_key_id and aws_secret_access_key)")
+    console.print("    3. Bedrock API key  (short-lived bearer token from AWS Console)")
+    mode_input = typer.prompt("  Mode", default="1").strip()
+    mode_map = {"1": "default", "2": "iam_user", "3": "api_key"}
+    auth_mode = mode_map.get(mode_input, "default")
+
+    bedrock_cfg: dict = {"auth_mode": auth_mode}
+
+    if auth_mode == "iam_user":
+        bedrock_cfg["access_key_id"] = typer.prompt("  aws_access_key_id")
+        bedrock_cfg["secret_access_key"] = typer.prompt("  aws_secret_access_key", hide_input=True)
+        session_token = typer.prompt(
+            "  aws_session_token (optional, leave blank if not using temporary credentials)",
+            default="",
+            show_default=False,
+        )
+        if session_token.strip():
+            bedrock_cfg["session_token"] = session_token.strip()
+    elif auth_mode == "api_key":
+        bedrock_cfg["api_key"] = typer.prompt("  Bedrock API key", hide_input=True)
+    # default mode: nothing to collect — boto3 picks up credentials from env/config.
+
+    region = typer.prompt("  AWS region", default="us-west-2")
+    bedrock_cfg["region"] = region
+
+    model = _prompt_model_name(preset, slot=slot)
+
+    return {
+        "provider": "bedrock",
+        "model": model,
+        "api_key": None,  # not applicable to bedrock
+        "base_url": None,
+        "bedrock": bedrock_cfg,
+    }
+
+
 def _run_smoke_test(config: dict) -> None:
-    """Run a quick smoke test to verify models are reachable."""
+    """Run a quick smoke test to verify the configured models are reachable.
+
+    Categorizes common errors and gives actionable next steps — better than
+    surfacing raw tracebacks.
+    """
     try:
         agent = _agent_from_config(config)
         console.print("\nRunning smoke test...", style="dim")
         resp = agent.query("What is 2+2?")
-        console.print(f"  Local test: {resp.routed_to} — OK", style="dim")
+        console.print(f"  ✓ Smoke test: routed to [cyan]{resp.routed_to}[/cyan]", style="dim")
     except Exception as e:
-        console.print(f"  Smoke test warning: {e}", style="yellow")
+        _render_smoke_test_error(e, config)
+
+
+def _render_smoke_test_error(exc: Exception, config: dict) -> None:
+    """Print a human-friendly diagnostic for a smoke-test failure."""
+    message = str(exc)
+    lower = message.lower()
+
+    console.print()
+    console.print("[yellow]⚠ Smoke test failed.[/yellow]", style="bold")
+    console.print(f"  Error: {message[:300]}", style="dim")
+    console.print()
+
+    hints: list[str] = []
+
+    if "ollama" in lower and ("connection" in lower or "refused" in lower or "timeout" in lower):
+        hints.append("Ollama doesn't seem to be running. Start it with: [cyan]ollama serve[/cyan]")
+    if "model" in lower and ("not found" in lower or "404" in lower):
+        local_model = config.get("local", {}).get("model", "")
+        if local_model:
+            hints.append(
+                f"The model [cyan]{local_model}[/cyan] isn't pulled. "
+                f"Run: [cyan]ollama pull {local_model}[/cyan]"
+            )
+    if "api_key" in lower or "unauthorized" in lower or "401" in lower or "403" in lower:
+        hints.append(
+            "API key may be invalid or missing. Re-check the key in your config, "
+            "or set the provider's env var (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.)."
+        )
+    if "credential" in lower or "nocredentialserror" in lower:
+        hints.append(
+            "AWS credentials not found. Set AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY, "
+            "configure [cyan]aws configure[/cyan], or re-run init and pick IAM User auth mode."
+        )
+    if "validationexception" in lower:
+        hints.append(
+            "Bedrock rejected the model ID. Check your model name matches a real Bedrock "
+            "model ID (e.g. [cyan]anthropic.claude-sonnet-4-5-20250929-v1:0[/cyan])."
+        )
+
+    if hints:
+        console.print("  Likely cause:", style="bold")
+        for hint in hints:
+            console.print(f"    • {hint}")
+    else:
+        console.print(
+            "  Your config was written but the agent could not reach any model. "
+            "Check your settings and run [cyan]autodidact query \"hello\"[/cyan] to retry.",
+            style="dim",
+        )
+    console.print()
 
 
 @app.command()
@@ -347,18 +551,51 @@ def chat(
             # Re-escalate the last question.
             if agent._history:
                 last_q = agent._history[-2]["content"] if len(agent._history) >= 2 else line
-                resp = agent.correct(last_q)
+                with console.status("[dim]Re-verifying with cloud...", spinner="dots"):
+                    resp = agent.correct(last_q)
                 renderer.render_response(resp)
             else:
                 console.print("No previous question to correct.", style="yellow")
             continue
 
-        resp = agent.query(line.strip())
+        resp = _query_with_spinner(agent, line.strip())
         renderer.render_response(resp)
 
     # Session summary on exit.
     report = agent.savings()
     renderer.render_session_summary(report)
+
+
+def _query_with_spinner(agent: Agent, question: str) -> QueryResponse:
+    """Run agent.query() while showing a 'thinking' spinner that updates per progress event.
+
+    The spinner text changes as the agent moves through its stages so the user
+    knows whether the latency is from memory search, local generation, or a
+    cloud round-trip.
+    """
+    with console.status("[dim]Thinking...", spinner="dots") as status:
+        def on_progress(event: dict) -> None:
+            et = event.get("type")
+            if et == "thinking":
+                hits = event.get("memory_hits", 0)
+                if hits:
+                    status.update(f"[dim]Checking memory... found {hits} similar entries")
+                else:
+                    status.update("[dim]Checking memory...")
+            elif et == "memory_hit":
+                status.update("[dim]Recalling from memory...")
+            elif et == "local_done":
+                conf = event.get("confidence", 0.0)
+                status.update(f"[dim]Local answer (confidence {conf:.2f})...")
+            elif et == "cloud_call":
+                model = event.get("model", "cloud")
+                status.update(f"[dim]Asking {model}...")
+            elif et == "cloud_done":
+                status.update("[dim]Got cloud answer, learning from it...")
+            elif et == "learning":
+                status.update("[dim]Storing new knowledge...")
+
+        return agent.query(question, on_progress=on_progress)
 
 
 @app.command()
@@ -371,7 +608,7 @@ def query(
     agent = _get_agent(path)
     renderer = ThoughtRenderer()
 
-    resp = agent.query(question)
+    resp = _query_with_spinner(agent, question)
     renderer.render_response(resp)
 
 
