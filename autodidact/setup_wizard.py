@@ -268,20 +268,28 @@ def build_config(
     cloud_model: Optional[str] = None,
     cloud_api_key: Optional[str] = None,
     cloud_base_url: Optional[str] = None,
+    cloud_bedrock: Optional[dict] = None,
     # cloud_cloud
     cheap_cloud_provider: Optional[str] = None,
     cheap_cloud_model: Optional[str] = None,
     cheap_cloud_api_key: Optional[str] = None,
     cheap_cloud_base_url: Optional[str] = None,
+    cheap_cloud_bedrock: Optional[dict] = None,
     expensive_cloud_provider: Optional[str] = None,
     expensive_cloud_model: Optional[str] = None,
     expensive_cloud_api_key: Optional[str] = None,
     expensive_cloud_base_url: Optional[str] = None,
+    expensive_cloud_bedrock: Optional[dict] = None,
     # common
     db_path: str = "~/.autodidact/memory.db",
     confidence_threshold: float = 0.7,
 ) -> dict:
-    """Build a config dict for the given setup mode."""
+    """Build a config dict for the given setup mode.
+
+    Bedrock-specific auth settings (auth_mode, access_key_id, api_key, region, ...)
+    are passed via the *_cloud_bedrock dicts and stored under the 'bedrock' key
+    on the cloud/local section.
+    """
     config: dict = {
         "routing": {"confidence_threshold": confidence_threshold},
         "memory": {"path": db_path},
@@ -301,6 +309,8 @@ def build_config(
                 cloud_cfg["api_key"] = cloud_api_key
             if cloud_base_url:
                 cloud_cfg["base_url"] = cloud_base_url
+            if cloud_bedrock:
+                cloud_cfg["bedrock"] = cloud_bedrock
             config["cloud"] = cloud_cfg
 
     elif mode == "cloud_cloud":
@@ -316,6 +326,8 @@ def build_config(
         }
         if cheap_cloud_api_key:
             config["local"]["api_key"] = cheap_cloud_api_key
+        if cheap_cloud_bedrock:
+            config["local"]["bedrock"] = cheap_cloud_bedrock
 
         config["cloud"] = {
             "provider": expensive_cloud_provider or "openai",
@@ -325,6 +337,8 @@ def build_config(
             config["cloud"]["base_url"] = expensive_cloud_base_url
         if expensive_cloud_api_key:
             config["cloud"]["api_key"] = expensive_cloud_api_key
+        if expensive_cloud_bedrock:
+            config["cloud"]["bedrock"] = expensive_cloud_bedrock
 
     elif mode == "local_only":
         config["local"] = {

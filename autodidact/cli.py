@@ -109,6 +109,7 @@ def _agent_from_config(config: dict) -> Agent:
     local_model: Optional[str] = None
     local_base_url: Optional[str] = None
     local_api_key_env: Optional[str] = None
+    local_bedrock: Optional[dict] = None
 
     if local_model_name:
         if local_provider and local_provider != "ollama":
@@ -122,6 +123,9 @@ def _agent_from_config(config: dict) -> Agent:
             local_api_key = local_cfg.get("api_key")
             if local_api_key and local_api_key_env:
                 os.environ.setdefault(local_api_key_env, local_api_key)
+            # Bedrock uses its own auth config, not a generic API key.
+            if local_provider == "bedrock":
+                local_bedrock = local_cfg.get("bedrock")
         else:
             # Local+cloud or local-only: Ollama.
             local_model = f"ollama/{local_model_name}"
@@ -132,6 +136,7 @@ def _agent_from_config(config: dict) -> Agent:
     cloud_model: Optional[str] = None
     cloud_base_url: Optional[str] = None
     cloud_api_key_env: Optional[str] = None
+    cloud_bedrock: Optional[dict] = None
 
     if cloud_model_name:
         cloud_model = f"{cloud_provider}/{cloud_model_name}"
@@ -141,6 +146,8 @@ def _agent_from_config(config: dict) -> Agent:
         cloud_api_key = cloud_cfg.get("api_key")
         if cloud_api_key and cloud_api_key_env:
             os.environ.setdefault(cloud_api_key_env, cloud_api_key)
+        if cloud_provider == "bedrock":
+            cloud_bedrock = cloud_cfg.get("bedrock")
 
     # ── Common ─────────────────────────────────────────────────────
     embedding_model = local_cfg.get("embedding_model")
@@ -160,10 +167,14 @@ def _agent_from_config(config: dict) -> Agent:
         kwargs["local_base_url"] = local_base_url
     if local_api_key_env:
         kwargs["local_api_key_env"] = local_api_key_env
+    if local_bedrock:
+        kwargs["local_bedrock"] = local_bedrock
     if cloud_base_url:
         kwargs["cloud_base_url"] = cloud_base_url
     if cloud_api_key_env:
         kwargs["cloud_api_key_env"] = cloud_api_key_env
+    if cloud_bedrock:
+        kwargs["cloud_bedrock"] = cloud_bedrock
 
     agent = Agent(**kwargs)
 
@@ -284,6 +295,7 @@ def _init_with_ollama(mode: str) -> dict:
             cloud_model=cloud_cfg["model"],
             cloud_api_key=cloud_cfg["api_key"],
             cloud_base_url=cloud_cfg.get("base_url"),
+            cloud_bedrock=cloud_cfg.get("bedrock"),
         )
 
     return build_config(
@@ -307,10 +319,12 @@ def _init_cloud_to_cloud() -> dict:
         cheap_cloud_model=cheap["model"],
         cheap_cloud_api_key=cheap["api_key"],
         cheap_cloud_base_url=cheap.get("base_url"),
+        cheap_cloud_bedrock=cheap.get("bedrock"),
         expensive_cloud_provider=expensive["provider"],
         expensive_cloud_model=expensive["model"],
         expensive_cloud_api_key=expensive["api_key"],
         expensive_cloud_base_url=expensive.get("base_url"),
+        expensive_cloud_bedrock=expensive.get("bedrock"),
     )
 
 
@@ -319,12 +333,23 @@ def _prompt_single_cloud_provider(*, slot: str) -> dict:
 
     slot: 'cloud' / 'cheap' / 'expensive' — used only for prompt labeling
     and to decide which default model (cheap vs expensive) to pick.
+
+    Bedrock is handled separately — it uses AWS credentials, not a
+    generic API key, and supports multiple auth modes.
     """
     providers = list_cloud_providers()
     console.print("  Providers: " + ", ".join(providers))
     provider = typer.prompt("  Provider", default="openai").strip().lower()
     preset = get_cloud_preset(provider)
 
+    if provider == "bedrock":
+        return _prompt_bedrock_config(preset, slot)
+
+    return _prompt_openai_compat_config(provider, preset, slot)
+
+
+def _prompt_openai_compat_config(provider: str, preset: dict, slot: str) -> dict:
+    """Prompt for an OpenAI-compatible provider: API key + model."""
     api_key = typer.prompt("  API key")
 
     # Pick a model: default to cheap/expensive based on slot.
@@ -341,6 +366,53 @@ def _prompt_single_cloud_provider(*, slot: str) -> dict:
         "model": model,
         "api_key": api_key,
         "base_url": preset.get("base_url") or None,
+    }
+
+
+def _prompt_bedrock_config(preset: dict, slot: str) -> dict:
+    """Prompt for Bedrock: auth mode + region + model. No generic API key."""
+    console.print("  Bedrock auth mode:")
+    console.print("    1. IAM Role / default credential chain  (env vars, ~/.aws/credentials, SSO, IMDS)")
+    console.print("    2. IAM User  (paste aws_access_key_id and aws_secret_access_key)")
+    console.print("    3. Bedrock API key  (short-lived bearer token from AWS Console)")
+    mode_input = typer.prompt("  Mode", default="1").strip()
+    mode_map = {"1": "default", "2": "iam_user", "3": "api_key"}
+    auth_mode = mode_map.get(mode_input, "default")
+
+    bedrock_cfg: dict = {"auth_mode": auth_mode}
+
+    if auth_mode == "iam_user":
+        bedrock_cfg["access_key_id"] = typer.prompt("  aws_access_key_id")
+        bedrock_cfg["secret_access_key"] = typer.prompt("  aws_secret_access_key", hide_input=True)
+        session_token = typer.prompt(
+            "  aws_session_token (optional, leave blank if not using temporary credentials)",
+            default="",
+            show_default=False,
+        )
+        if session_token.strip():
+            bedrock_cfg["session_token"] = session_token.strip()
+    elif auth_mode == "api_key":
+        bedrock_cfg["api_key"] = typer.prompt("  Bedrock API key", hide_input=True)
+    # default mode: nothing to collect — boto3 picks up credentials from env/config.
+
+    region = typer.prompt("  AWS region", default="us-west-2")
+    bedrock_cfg["region"] = region
+
+    # Model selection.
+    default_model = preset.get("default_cheap", "")
+    if slot in ("cloud", "expensive"):
+        default_model = preset.get("default_expensive", "") or default_model
+    models = preset.get("models", [])
+    if models:
+        console.print("  Available models: " + ", ".join(models))
+    model = typer.prompt("  Model", default=default_model)
+
+    return {
+        "provider": "bedrock",
+        "model": model,
+        "api_key": None,  # not applicable to bedrock
+        "base_url": None,
+        "bedrock": bedrock_cfg,
     }
 
 
