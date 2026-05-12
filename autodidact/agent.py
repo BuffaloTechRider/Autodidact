@@ -123,11 +123,17 @@ class Agent:
         staleness_days: float = MEMORY_STALENESS_DAYS,
         gsa_enabled: bool = True,
         gsa_threshold: float = 0.5,
+        gsa_prompt_version: str = "v3",
     ) -> None:
+        if gsa_prompt_version not in ("v2", "v3", "v4"):
+            raise ValueError(
+                f"gsa_prompt_version must be one of 'v2', 'v3', 'v4'; got {gsa_prompt_version!r}"
+            )
         self.confidence_threshold = confidence_threshold
         self.staleness_days = staleness_days
         self.gsa_enabled = gsa_enabled
         self.gsa_threshold = gsa_threshold
+        self.gsa_prompt_version = gsa_prompt_version
 
         # Expand ~ in db_path and ensure parent dir exists.
         self._db_path = str(Path(db_path).expanduser())
@@ -320,9 +326,7 @@ class Agent:
             and self._cloud_client is not None
         ):
             try:
-                if getattr(self, "_gsa", None) is None:
-                    self._gsa = SelfAssessment(self._local_client)
-                gsa_result = self._gsa.compute(question, retrieved_hits=memory_hits)
+                gsa_result = self._get_gsa().compute(question, retrieved_hits=memory_hits)
                 gsa_p_yes = gsa_result.p_yes
                 if gsa_p_yes < gsa_threshold:
                     # Model self-reports it can't answer — skip local entirely.
@@ -474,6 +478,21 @@ class Agent:
         )
 
     # ── Internal ──────────────────────────────────────────────────
+
+    def _get_gsa(self) -> SelfAssessment:
+        """Lazily build the SelfAssessment probe with the configured prompt version.
+
+        Exposed so tests can inspect the prompt version, and so subclasses
+        can swap the probe. The agent caches the instance on ``_gsa``.
+        """
+        if getattr(self, "_gsa", None) is None:
+            assert self._local_client is not None, "local client required for GSA"
+            version = getattr(self, "gsa_prompt_version", "v3")
+            self._gsa = SelfAssessment(
+                self._local_client,
+                prompt_version=version,
+            )
+        return self._gsa
 
     def _check_memory(self, question: str) -> list[ScoredKnowledgeEntry]:
         """Search the knowledge store for similar past Q&A."""

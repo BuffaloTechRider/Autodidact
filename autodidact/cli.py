@@ -152,7 +152,9 @@ def _agent_from_config(config: dict) -> Agent:
     # ── Common ─────────────────────────────────────────────────────
     embedding_model = local_cfg.get("embedding_model")
     db_path = config.get("memory", {}).get("path", "~/.autodidact/memory.db")
-    threshold = config.get("routing", {}).get("confidence_threshold", 0.7)
+    routing_cfg = config.get("routing", {})
+    threshold = routing_cfg.get("confidence_threshold", 0.7)
+    gsa_prompt_version = routing_cfg.get("gsa_prompt_version", "v3")
 
     kwargs: dict = dict(
         local_model=local_model,
@@ -160,6 +162,7 @@ def _agent_from_config(config: dict) -> Agent:
         cloud_provider=cloud_provider,
         db_path=db_path,
         confidence_threshold=threshold,
+        gsa_prompt_version=gsa_prompt_version,
     )
     if embedding_model:
         kwargs["embedding_model"] = embedding_model
