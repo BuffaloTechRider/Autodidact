@@ -562,7 +562,9 @@ def _dispatch_slash(agent: Agent, line: str, renderer) -> bool:
     """Route a user input line to a slash-command handler. Returns True iff handled.
 
     Known commands:
-      /wrong, /correct, "that's wrong"  — re-escalate the last question
+      /wrong, /correct, "that's wrong"  — re-escalate the last question to cloud
+      /cloud [text]                     — same as /wrong (no arg) or force a new
+                                          question to cloud (/cloud <text>)
       /gsa [v2|v3|v4|help]              — show or switch the GSA prompt version
     """
     lower = line.lower().strip()
@@ -571,11 +573,53 @@ def _dispatch_slash(agent: Agent, line: str, renderer) -> bool:
         _handle_wrong_command(agent, renderer)
         return True
 
+    if lower == "/cloud" or lower.startswith("/cloud "):
+        _handle_cloud_command(agent, line, renderer)
+        return True
+
     if lower == "/gsa" or lower.startswith("/gsa "):
         _handle_gsa_command(agent, line)
         return True
 
     return False
+
+
+def _handle_cloud_command(agent: Agent, line: str, renderer) -> None:
+    """Force cloud escalation, either re-routing the last question or a new one.
+
+    Usage:
+      /cloud          — alias of /wrong: re-route the last user turn to cloud
+      /cloud <text>   — send <text> directly to cloud, skipping memory/GSA/local
+
+    Both forms call Agent.correct() under the hood. If the last question was
+    answered locally, there is no stored memory entry to invalidate (that's
+    a no-op). If it was answered by cloud, invalidating the entry is the
+    right thing to do — we're asking cloud to re-answer.
+    """
+    parts = line.split(maxsplit=1)
+    arg = parts[1].strip() if len(parts) > 1 else ""
+
+    if not arg:
+        # /cloud alone — re-route the last user turn.
+        if not agent._history:
+            console.print("No previous question to re-route to cloud.", style="yellow")
+            return
+        last_q = ""
+        for turn in reversed(agent._history):
+            if turn["role"] == "user":
+                last_q = turn["content"]
+                break
+        if not last_q:
+            console.print("No previous question to re-route to cloud.", style="yellow")
+            return
+        question = last_q
+    else:
+        question = arg
+
+    with console.status("[dim]Asking cloud...", spinner="dots"):
+        resp = agent.correct(question)
+    if renderer is not None:
+        renderer.render_response(resp)
 
 
 def _handle_wrong_command(agent: Agent, renderer) -> None:
