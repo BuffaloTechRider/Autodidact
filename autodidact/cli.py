@@ -546,16 +546,8 @@ def chat(
         if not line.strip():
             continue
 
-        # User correction flow.
-        if line.strip().lower() in ("/wrong", "/correct", "that's wrong"):
-            # Re-escalate the last question.
-            if agent._history:
-                last_q = agent._history[-2]["content"] if len(agent._history) >= 2 else line
-                with console.status("[dim]Re-verifying with cloud...", spinner="dots"):
-                    resp = agent.correct(last_q)
-                renderer.render_response(resp)
-            else:
-                console.print("No previous question to correct.", style="yellow")
+        # Slash commands: /wrong, /gsa v4, etc. Return True if handled.
+        if _dispatch_slash(agent, line.strip(), renderer):
             continue
 
         resp = _query_with_spinner(agent, line.strip())
@@ -564,6 +556,92 @@ def chat(
     # Session summary on exit.
     report = agent.savings()
     renderer.render_session_summary(report)
+
+
+def _dispatch_slash(agent: Agent, line: str, renderer) -> bool:
+    """Route a user input line to a slash-command handler. Returns True iff handled.
+
+    Known commands:
+      /wrong, /correct, "that's wrong"  — re-escalate the last question
+      /gsa [v2|v3|v4|help]              — show or switch the GSA prompt version
+    """
+    lower = line.lower().strip()
+
+    if lower in ("/wrong", "/correct", "that's wrong"):
+        _handle_wrong_command(agent, renderer)
+        return True
+
+    if lower == "/gsa" or lower.startswith("/gsa "):
+        _handle_gsa_command(agent, line)
+        return True
+
+    return False
+
+
+def _handle_wrong_command(agent: Agent, renderer) -> None:
+    """Re-escalate the last question to cloud and replace the stored answer."""
+    if not agent._history:
+        console.print("No previous question to correct.", style="yellow")
+        return
+    last_q = agent._history[-2]["content"] if len(agent._history) >= 2 else ""
+    if not last_q:
+        console.print("No previous question to correct.", style="yellow")
+        return
+    with console.status("[dim]Re-verifying with cloud...", spinner="dots"):
+        resp = agent.correct(last_q)
+    if renderer is not None:
+        renderer.render_response(resp)
+
+
+def _handle_gsa_command(agent: Agent, line: str) -> None:
+    """Show or change the GSA prompt version for the rest of this session.
+
+    Usage:
+      /gsa            — print current version
+      /gsa help       — list available versions
+      /gsa v4         — switch to v4 (opt-in adversarial-trust prompt)
+      /gsa v3         — switch back to the default
+      /gsa v2         — legacy bare prompt, no retrieval
+
+    This is session-only. Persisting the choice requires editing ~/.autodidact/config.yaml.
+    """
+    from autodidact.signals.grounded_self_assessment import SelfAssessment
+
+    parts = line.split(maxsplit=1)
+    arg = parts[1].strip().lower() if len(parts) > 1 else ""
+
+    valid = ("v2", "v3", "v4")
+
+    if arg == "" or arg in ("status", "show"):
+        current = _gsa_current_version(agent)
+        console.print(f"GSA prompt version: [cyan]{current}[/cyan]")
+        return
+
+    if arg in ("help", "-h", "--help", "?"):
+        console.print("Usage: [cyan]/gsa [v2|v3|v4|help][/cyan]")
+        console.print("  v2 — legacy bare prompt (no retrieval)")
+        console.print("  v3 — default: retrieval-conditional, specific-knowledge framing")
+        console.print("  v4 — opt-in: adversarial trust framing")
+        return
+
+    if arg not in valid:
+        console.print(
+            f"[yellow]Unknown version '{arg}'. Valid: {', '.join(valid)}. "
+            f"Try [cyan]/gsa help[/cyan].[/yellow]"
+        )
+        return
+
+    # Rebuild the probe with the new version. Next query picks it up.
+    agent._gsa = SelfAssessment(agent._local_client, prompt_version=arg)
+    console.print(f"GSA prompt version set to [cyan]{agent._gsa.prompt_version}[/cyan].")
+
+
+def _gsa_current_version(agent: Agent) -> str:
+    """Return a human-readable current GSA prompt version."""
+    probe = getattr(agent, "_gsa", None)
+    if probe is None:
+        return "v3 (default, no probe built yet)"
+    return probe.prompt_version
 
 
 def _query_with_spinner(agent: Agent, question: str) -> QueryResponse:
