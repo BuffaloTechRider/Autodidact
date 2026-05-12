@@ -70,6 +70,7 @@ DEFAULT_MIN_SIMILARITY_V3 = 0.70
 # so we can replicate or compare across versions.
 PROMPT_VERSION = "gsa-v3-retrieval-conditional"
 PROMPT_VERSION_V2 = "gsa-v2-confidence"
+PROMPT_VERSION_V4 = "gsa-v4-adversarial-trust"
 
 # The bare prompt. Used both by v2 (always) and by v3 when no hits clear the
 # threshold. CRITICAL: the bare prompt is identical in both cases so the
@@ -78,9 +79,9 @@ PROMPT_VERSION_V2 = "gsa-v2-confidence"
 BARE_PROMPT_TEMPLATE = (
     "Question from the user:\n"
     "{query}\n\n"
-    "Do you have specific, reliable knowledge to answer this question?"
-    "Answering NO when uncertain is the right choice."
-    "The user would rather get a cloud-backed answer than a confidently-wrong local one."
+    "Do you have specific, reliable knowledge to answer this question? "
+    "Answering NO when uncertain is the right choice. "
+    "The user would rather get a cloud-backed answer than a confidently-wrong local one. "
     "Respond with exactly one token: YES or NO."
 )
 
@@ -90,9 +91,31 @@ WITH_RETRIEVAL_PROMPT_TEMPLATE = (
     "{query}\n\n"
     "Here is what you recall from your knowledge base:\n"
     "{hits_block}\n\n"
-    "Do you have specific, reliable knowledge to answer this question?"
-    "Answering NO when uncertain is the right choice."
-    "The user would rather get a cloud-backed answer than a confidently-wrong local one."
+    "Do you have specific, reliable knowledge to answer this question? "
+    "Answering NO when uncertain is the right choice. "
+    "The user would rather get a cloud-backed answer than a confidently-wrong local one. "
+    "Respond with exactly one token: YES or NO."
+)
+
+# ── v4: adversarial trust framing (opt-in) ────────────────────────
+# Uses explicit cost-of-wrong-answer language to counteract sycophancy bias
+# toward YES. Kept opt-in until experimentally validated against v3 on the
+# same benchmark (EXP-005 equivalent). Default remains v3.
+BARE_PROMPT_TEMPLATE_V4 = (
+    "Question from the user:\n"
+    "{query}\n\n"
+    "If you say YES and your answer turns out to be wrong, the user loses "
+    "trust. Say NO unless you are confident.\n\n"
+    "Respond with exactly one token: YES or NO."
+)
+
+WITH_RETRIEVAL_PROMPT_TEMPLATE_V4 = (
+    "Question from the user:\n"
+    "{query}\n\n"
+    "Here is what you recall from your knowledge base:\n"
+    "{hits_block}\n\n"
+    "If you say YES and your answer turns out to be wrong, the user loses "
+    "trust. Say NO unless you are confident.\n\n"
     "Respond with exactly one token: YES or NO."
 )
 
@@ -131,8 +154,14 @@ GroundedSelfAssessmentResult = SelfAssessmentResult
 class SelfAssessment:
     """Prompt the local model with a single Y/N self-confidence probe.
 
-    By default runs the v3 retrieval-conditional prompt. Pass ``use_v2_legacy=True``
-    to reproduce v2 runs (bare prompt always, retrieved_hits silently ignored).
+    By default runs the v3 retrieval-conditional prompt. Two knobs control
+    which prompt template is used:
+
+    - ``prompt_version="v4"`` switches to the adversarial-trust prompt, which
+      uses cost-of-wrong-answer framing to counteract sycophancy-driven YES bias.
+      Opt-in until experimentally validated.
+    - ``use_v2_legacy=True`` reproduces v2 runs (bare prompt always, retrieved
+      hits silently ignored). Equivalent to ``prompt_version="v2"``.
 
     Parameters
     ----------
@@ -142,11 +171,12 @@ class SelfAssessment:
         three-tier fallback described in the module docstring.
     min_similarity : float
         Similarity threshold above which a retrieved hit is considered "strong
-        enough" to include in the prompt. Only meaningful when
-        ``use_v2_legacy=False``. Defaults to 0.70 per EXP-005.
+        enough" to include in the prompt. Defaults to 0.70 per EXP-005.
     use_v2_legacy : bool
-        If True, always use the bare v2 prompt. ``retrieved_hits`` and
-        ``min_similarity`` are silently ignored. Keep False for v0.1+ runs.
+        If True, always use the bare v2 prompt. Mutually exclusive with
+        ``prompt_version``. Kept for backwards compatibility.
+    prompt_version : str | None
+        One of {"v2", "v3", "v4"} or None. None defaults to "v3".
     """
 
     def __init__(
@@ -154,15 +184,35 @@ class SelfAssessment:
         llm_client: LLMClient,
         min_similarity: float = DEFAULT_MIN_SIMILARITY_V3,
         use_v2_legacy: bool = False,
+        prompt_version: Optional[str] = None,
     ) -> None:
+        if prompt_version is not None and use_v2_legacy:
+            raise ValueError(
+                "Pass either prompt_version or use_v2_legacy, not both."
+            )
+        if prompt_version is not None and prompt_version not in ("v2", "v3", "v4"):
+            raise ValueError(
+                f"prompt_version must be one of 'v2', 'v3', 'v4'; got {prompt_version!r}"
+            )
         self.llm_client = llm_client
         self.min_similarity = float(min_similarity)
-        self.use_v2_legacy = bool(use_v2_legacy)
+        if use_v2_legacy:
+            self._version = "v2"
+        elif prompt_version is not None:
+            self._version = prompt_version
+        else:
+            self._version = "v3"
+        # Preserve legacy attribute so existing callers reading it still work.
+        self.use_v2_legacy = self._version == "v2"
 
     @property
     def prompt_version(self) -> str:
         """Return the prompt version string persisted to experiment rows."""
-        return PROMPT_VERSION_V2 if self.use_v2_legacy else PROMPT_VERSION
+        if self._version == "v2":
+            return PROMPT_VERSION_V2
+        if self._version == "v4":
+            return PROMPT_VERSION_V4
+        return PROMPT_VERSION  # v3 default
 
     def compute(
         self,
@@ -257,25 +307,30 @@ class SelfAssessment:
         bare fallback was used. This lets callers audit how often retrieval
         was actually shown at runtime.
         """
-        if self.use_v2_legacy:
+        if self._version == "v2":
             if retrieved_hits:
                 logger.debug(
-                    "SelfAssessment (v2 legacy): ignoring %d retrieved hits",
+                    "SelfAssessment (v2): ignoring %d retrieved hits",
                     len(retrieved_hits),
                 )
             return (BARE_PROMPT_TEMPLATE.format(query=query.strip()), False, 0)
 
-        # v3: retrieval-conditional.
+        # v3 and v4 are both retrieval-conditional. Pick templates per version.
+        if self._version == "v4":
+            bare_tpl = BARE_PROMPT_TEMPLATE_V4
+            with_retr_tpl = WITH_RETRIEVAL_PROMPT_TEMPLATE_V4
+        else:
+            bare_tpl = BARE_PROMPT_TEMPLATE
+            with_retr_tpl = WITH_RETRIEVAL_PROMPT_TEMPLATE
+
         strong_hits = self._filter_strong_hits(retrieved_hits)
         if strong_hits:
             hits_block = _render_hits_block(strong_hits)
-            prompt = WITH_RETRIEVAL_PROMPT_TEMPLATE.format(
-                query=query.strip(), hits_block=hits_block,
-            )
+            prompt = with_retr_tpl.format(query=query.strip(), hits_block=hits_block)
             return (prompt, True, len(strong_hits))
 
-        # No strong hits — bare prompt, indistinguishable from v2 / never-searched.
-        return (BARE_PROMPT_TEMPLATE.format(query=query.strip()), False, 0)
+        # No strong hits — bare prompt, indistinguishable from "never-searched".
+        return (bare_tpl.format(query=query.strip()), False, 0)
 
     def _filter_strong_hits(self, retrieved_hits: Optional[list]) -> list:
         """Return only hits whose score is above min_similarity.
