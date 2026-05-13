@@ -216,7 +216,7 @@ class TestInitCommand:
         assert result.exit_code == 0, result.output
 
         config = yaml.safe_load(config_path.read_text())
-        assert config["local"]["model"] == "qwen3:8b"
+        assert config["local"]["model"] == "qwen3:4b"
         assert "Ready" in result.output
 
     @patch("autodidact.cli._run_smoke_test")

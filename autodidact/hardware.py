@@ -127,15 +127,20 @@ def detect_hardware() -> HardwareProfile:
 # Conservative choices across tiers. Qwen 3 is the current generation with
 # better benchmark performance than Qwen 2.5; our routing signals are designed
 # to be model-agnostic so using the newer default is the right call.
+#
+# Sizing was bumped DOWN one tier (May 2026) after live testing showed that
+# qwen3:14b takes 30+ seconds to think on M-series Apple Silicon for casual
+# queries. Smaller models give a far better default chat UX. Users who want
+# the bigger model are one pick away in the curated list (cli._LOCAL_MODEL_CHOICES).
 _TIER_MODELS = {
-    "high":    "qwen3:14b",
-    "medium":  "qwen3:8b",
-    "low":     "qwen3:4b",
-    "minimal": "qwen3:0.6b",
-    "unknown": "qwen3:8b",  # conservative mid-tier fallback
+    "high":    "qwen3:8b",     # was qwen3:14b — 14b too slow on M-series
+    "medium":  "qwen3:4b",     # was qwen3:8b
+    "low":     "qwen3:1.7b",   # was qwen3:4b
+    "minimal": "qwen3:0.6b",   # unchanged
+    "unknown": "qwen3:4b",     # conservative mid-tier fallback (was qwen3:8b)
 }
 
 
 def recommended_local_model(profile: HardwareProfile) -> str:
     """Return a default local model name for the given profile."""
-    return _TIER_MODELS.get(profile.tier, "qwen3:8b")
+    return _TIER_MODELS.get(profile.tier, "qwen3:4b")

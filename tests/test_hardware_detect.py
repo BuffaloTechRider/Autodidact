@@ -1,10 +1,10 @@
 """Tests for hardware detection used to pick a sensible default local model.
 
 The heuristic:
-  - Apple Silicon + 32GB+ unified memory -> 'high'   (qwen3:14b or similar)
+  - Apple Silicon + 32GB+ unified memory -> 'high'   (qwen3:8b)
   - NVIDIA GPU + 16GB+ VRAM             -> 'high'
-  - Any system, 16GB+ RAM               -> 'medium'  (qwen2.5:7b)
-  - 8-16GB RAM                          -> 'low'     (qwen3:4b)
+  - Any system, 16GB+ RAM               -> 'medium'  (qwen3:4b)
+  - 8-16GB RAM                          -> 'low'     (qwen3:1.7b)
   - <8GB                                -> 'minimal' (qwen3:0.6b)
 
 Detection must degrade gracefully when psutil or subprocess calls fail —
@@ -115,21 +115,21 @@ class TestRecommendedModel:
 
     def test_high_tier(self):
         p = HardwareProfile(ram_gb=32, is_apple_silicon=True, has_nvidia=False, vram_gb=None, tier="high")
-        assert recommended_local_model(p) == "qwen3:14b"
+        assert recommended_local_model(p) == "qwen3:8b"
 
     def test_medium_tier(self):
         p = HardwareProfile(ram_gb=16, is_apple_silicon=False, has_nvidia=False, vram_gb=None, tier="medium")
-        assert recommended_local_model(p) == "qwen3:8b"
+        assert recommended_local_model(p) == "qwen3:4b"
 
     def test_low_tier(self):
         p = HardwareProfile(ram_gb=10, is_apple_silicon=False, has_nvidia=False, vram_gb=None, tier="low")
-        assert recommended_local_model(p) == "qwen3:4b"
+        assert recommended_local_model(p) == "qwen3:1.7b"
 
     def test_minimal_tier(self):
         p = HardwareProfile(ram_gb=4, is_apple_silicon=False, has_nvidia=False, vram_gb=None, tier="minimal")
         assert recommended_local_model(p) == "qwen3:0.6b"
 
     def test_unknown_tier_falls_back_to_medium(self):
-        """When detection fails, pick the current default (qwen3:8b)."""
+        """When detection fails, pick the conservative mid-tier default (qwen3:4b)."""
         p = HardwareProfile(ram_gb=0, is_apple_silicon=False, has_nvidia=False, vram_gb=None, tier="unknown")
-        assert recommended_local_model(p) == "qwen3:8b"
+        assert recommended_local_model(p) == "qwen3:4b"
