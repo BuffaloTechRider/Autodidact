@@ -750,7 +750,21 @@ class Agent:
         return "\n".join(lines)
 
     def _compute_confidence(self, resp: ChatResponseWithLogprobs) -> float:
-        """Compute logprob_uncertainty from a local model response."""
+        """Compute logprob_uncertainty from a local model response.
+
+        On thinking-model responses (qwen3 with reasoning, DeepSeek-R1, etc.)
+        the avg_logprob is over BOTH thinking and content tokens. Thinking
+        tokens are inherently noisy ("explore option A... or maybe B...")
+        which drags the average below threshold even on correct answers.
+
+        For thinking responses we return max-confidence (1.0) so the
+        post-local gate doesn't penalize them. The refusal detector and the
+        pre-local GSA gate still fire — those are the right tools for
+        thinking models.
+        """
+        if resp.had_thinking:
+            return 1.0
+
         avg_lp = resp.avg_logprob
         if avg_lp is None:
             return 0.5  # neutral if no logprobs available
