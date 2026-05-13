@@ -134,9 +134,10 @@ class TestProgressEventsCloudRoute:
         """Cloud route: thinking → cloud_call → cloud_done → learning."""
         agent = agent_with_mocks
         agent._local_client.chat_with_logprobs.return_value = ChatResponseWithLogprobs(
-            content="dunno", model="qwen2.5:7b", avg_logprob=-3.0,
+            content="I don't have real-time data on that.", model="qwen2.5:7b", avg_logprob=-3.0,
             logprobs=[-3.0], top_logprobs_by_position=[],
         )
+        agent._local_client.chat.return_value = ChatResponse(content="I don't have real-time data on that.", model="qwen2.5:7b")
 
         events = []
         agent.query("Hard question", on_progress=lambda e: events.append(e))
@@ -151,9 +152,10 @@ class TestProgressEventsCloudRoute:
         """The cloud_done event should include cost and latency."""
         agent = agent_with_mocks
         agent._local_client.chat_with_logprobs.return_value = ChatResponseWithLogprobs(
-            content="dunno", model="qwen2.5:7b", avg_logprob=-3.0,
+            content="I don't have real-time data on that.", model="qwen2.5:7b", avg_logprob=-3.0,
             logprobs=[-3.0], top_logprobs_by_position=[],
         )
+        agent._local_client.chat.return_value = ChatResponse(content="I don't have real-time data on that.", model="qwen2.5:7b")
 
         events = []
         agent.query("Hard question", on_progress=lambda e: events.append(e))
@@ -167,9 +169,10 @@ class TestProgressEventsCloudRoute:
         """The learning event should report how many entries were stored."""
         agent = agent_with_mocks
         agent._local_client.chat_with_logprobs.return_value = ChatResponseWithLogprobs(
-            content="dunno", model="qwen2.5:7b", avg_logprob=-3.0,
+            content="I don't have real-time data on that.", model="qwen2.5:7b", avg_logprob=-3.0,
             logprobs=[-3.0], top_logprobs_by_position=[],
         )
+        agent._local_client.chat.return_value = ChatResponse(content="I don't have real-time data on that.", model="qwen2.5:7b")
 
         events = []
         agent.query("Hard question", on_progress=lambda e: events.append(e))

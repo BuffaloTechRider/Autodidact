@@ -350,17 +350,22 @@ class Agent:
 
         messages = self._build_messages(question, context, memory_hits)
         local_resp = self._call_local(messages, _emit)
-        confidence = self._compute_confidence(local_resp)
 
         # Refusal override: the local model can hedge or ask for clarification
         # with highly confident tokens, which fools logprob-based routing.
-        # When the content looks like a voluntary surrender, escalate regardless
-        # of confidence — a hedge answered by cloud is strictly better than a
-        # confident hedge returned to the user.
+        # When the content looks like a voluntary surrender, escalate.
         refused = _looks_like_refusal(local_resp.content)
 
-        if confidence >= self.confidence_threshold and not refused:
-            # Local is confident AND didn't refuse — return its answer.
+        # Logprob-based confidence gating was removed (May 2026). Two reasons:
+        # 1. Thinking models (qwen3 etc.) have noisy avg_logprob over their
+        #    reasoning tokens, causing false escalations on perfect answers.
+        # 2. Requesting logprobs from Ollama added ~150ms per call (benchmarked).
+        # GSA gates pre-local; refusal detector gates post-local. Those are the
+        # two checkpoints the routing relies on now.
+        if not refused:
+            # Local answered without refusing — return its answer.
+            # Confidence is reported as 1.0 since we no longer gate on logprobs.
+            confidence = 1.0
             _emit({"type": "local_done", "confidence": confidence})
             latency = _elapsed_ms(started)
             cost = 0.0
@@ -378,15 +383,15 @@ class Agent:
 
         # ── Stage 3: Escalate to cloud ───────────────────────────
         if self._cloud_client is None:
-            # No cloud model — return local answer anyway with low confidence.
-            _emit({"type": "local_done", "confidence": confidence})
+            # No cloud model — return local answer anyway with neutral confidence.
+            _emit({"type": "local_done", "confidence": 0.5})
             latency = _elapsed_ms(started)
-            self._record_query("local", 0.0, confidence, latency, question=question)
+            self._record_query("local", 0.0, 0.5, latency, question=question)
             self._append_history(question, local_resp.content)
             return QueryResponse(
                 answer=local_resp.content,
                 routed_to="local",
-                confidence=confidence,
+                confidence=0.5,
                 cost_usd=0.0,
                 learned=False,
                 latency_ms=latency,
@@ -489,21 +494,23 @@ class Agent:
         self,
         messages: list[ChatMessage],
         emit: Callable[[dict], None],
-    ) -> ChatResponseWithLogprobs:
+    ) -> ChatResponse:
         """Call the local model. Streams when on Ollama; falls back otherwise.
 
-        For Ollama we use ``chat_stream_ollama`` and forward each chunk through
-        the agent's progress callback as ``token`` events tagged with
-        ``source='local'`` and phase=='content' or 'thinking'. The CLI
-        renderer can then show tokens as they arrive, masking generation
-        latency.
+        Notably DOES NOT request logprobs. A benchmark (May 2026) showed
+        Ollama adds ~150ms per call when ``logprobs=True``, even at
+        ``top_logprobs=1``. Since the agent's post-local routing no longer
+        consults logprobs (GSA + refusal detector handle that role), paying
+        the overhead is wasted.
 
-        For non-Ollama providers (OpenAI-compatible, Bedrock) we fall back to
-        the non-streaming ``chat_with_logprobs`` path. Streaming for those
-        providers is a future enhancement on the local-model side.
+        For Ollama we use ``chat_stream_ollama_no_logprobs`` and forward
+        each chunk through the agent's progress callback as ``token``
+        events tagged with ``source='local'`` and ``phase='content'`` or
+        ``'thinking'``.
 
-        Tolerates clients that don't expose ``config.provider`` (notably mock
-        clients in tests) — falls back to the non-streaming path in that case.
+        For non-Ollama providers and test mocks (no recognised
+        ``config.provider``), we fall back to plain ``chat()`` —
+        also no logprobs.
         """
         assert self._local_client is not None
         config = getattr(self._local_client, "config", None)
@@ -513,17 +520,16 @@ class Agent:
             def _on_chunk(chunk: dict) -> None:
                 emit({"type": "token", "source": "local", **chunk})
 
-            return self._local_client.chat_stream_ollama(
+            return self._local_client.chat_stream_ollama_no_logprobs(
                 messages,
                 on_token=_on_chunk,
                 max_tokens=1024,
                 temperature=0.0,
-                top_logprobs=1,
             )
 
-        # Non-Ollama or test mock: no streaming, use the normal path.
-        return self._local_client.chat_with_logprobs(
-            messages, max_tokens=1024, temperature=0.0, top_logprobs=1,
+        # Non-Ollama or test mock: no streaming, no logprobs.
+        return self._local_client.chat(
+            messages, max_tokens=1024, temperature=0.0,
         )
 
     def _call_cloud(

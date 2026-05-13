@@ -221,6 +221,63 @@ def _consume_ollama_stream(
         top_logprobs_by_position=top_lps,
         had_thinking=bool(thinking_buf),
     )
+
+
+def _consume_ollama_stream_plain(
+    resp: Any,
+    on_token: Callable[[dict], None],
+    fallback_model: str,
+    started: float,
+) -> "ChatResponse":
+    """Read NDJSON chunks from an Ollama streaming response (no logprobs).
+
+    Mirrors ``_consume_ollama_stream`` but skips logprob parsing entirely
+    and returns a plain ``ChatResponse``. Used by
+    ``chat_stream_ollama_no_logprobs`` to save the ~150ms per-call overhead
+    that Ollama adds when computing top-k token probabilities.
+    """
+    import json as _json
+
+    content_buf: list[str] = []
+    thinking_buf: list[str] = []
+    final_data: dict[str, Any] = {}
+
+    for raw_line in resp.iter_lines():
+        if not raw_line:
+            continue
+        try:
+            chunk = _json.loads(raw_line)
+        except (ValueError, TypeError) as e:
+            logger.warning("Ollama streaming chunk could not be parsed: %s", e)
+            continue
+
+        message = chunk.get("message") or {}
+        delta_content = message.get("content") or ""
+        delta_thinking = message.get("thinking") or ""
+
+        if delta_thinking:
+            thinking_buf.append(delta_thinking)
+            on_token({"phase": "thinking", "text": delta_thinking})
+        if delta_content:
+            content_buf.append(delta_content)
+            on_token({"phase": "content", "text": delta_content})
+
+        if chunk.get("done"):
+            final_data = chunk
+
+    latency_ms = int((time.perf_counter() - started) * 1000)
+
+    full_content = "".join(content_buf)
+    if not full_content.strip():
+        full_content = "".join(thinking_buf).strip()
+
+    return ChatResponse(
+        content=full_content,
+        model=final_data.get("model", fallback_model),
+        input_tokens=int(final_data.get("prompt_eval_count", 0) or 0),
+        output_tokens=int(final_data.get("eval_count", 0) or 0),
+        latency_ms=latency_ms,
+    )
 # ── Answer extraction (handles thinking models) ──────────────────
 #
 # Three response shapes seen in the wild:
@@ -525,6 +582,78 @@ class LLMClient:
                 raise LLMClientError(f"Ollama HTTP {resp.status_code} streaming /api/chat: {snippet}")
 
             return _consume_ollama_stream(resp, on_token, self.config.model, started)
+
+        return _with_retries(
+            do,
+            self.config.max_retries,
+            (requests.ConnectionError, requests.exceptions.ConnectTimeout),
+        )
+
+    def chat_stream_ollama_no_logprobs(
+        self,
+        messages: list[ChatMessage],
+        *,
+        on_token: Callable[[dict], None],
+        **opts: Any,
+    ) -> ChatResponse:
+        """Stream a chat response from Ollama WITHOUT requesting logprobs.
+
+        Same on_token contract as ``chat_stream_ollama``: each chunk emits
+        ``{"phase": "content" | "thinking", "text": "..."}``. Returns a
+        plain ``ChatResponse`` (no logprob fields) since none were requested.
+
+        Why this exists: a benchmark showed Ollama adds roughly 150ms per
+        call when ``logprobs=True``, even at ``top_logprobs=1``. The agent's
+        chat path no longer reads logprobs from the local response (the
+        ``had_thinking`` skip plus this opt-in routing change), so paying
+        that overhead is wasted.
+
+        ``chat_stream_ollama`` is preserved for benchmarks and any external
+        caller that does want logprobs.
+        """
+        options = self._ollama_options(opts)
+        options.setdefault("num_predict", options.get("max_tokens", 1024))
+        opts.pop("top_logprobs", None)  # Explicitly drop if passed in by mistake.
+        think = opts.pop("think", None)
+
+        body: dict[str, Any] = {
+            "model": self.config.model,
+            "messages": [asdict(m) for m in messages],
+            "stream": True,
+            "options": options,
+        }
+        if think is not None:
+            body["think"] = bool(think)
+
+        url = f"{self._ollama_host}/api/chat"
+        started = time.perf_counter()
+
+        def do() -> ChatResponse:
+            try:
+                resp = requests.post(
+                    url,
+                    json=body,
+                    stream=True,
+                    timeout=self.config.timeout_seconds,
+                )
+            except requests.exceptions.ReadTimeout as e:
+                raise LLMClientError(
+                    f"Ollama read timeout after {self.config.timeout_seconds}s "
+                    f"during streaming /api/chat. The model may need a longer "
+                    f"timeout for cold starts or large generations."
+                ) from e
+            except (requests.ConnectionError, requests.exceptions.ConnectTimeout):
+                raise
+
+            if resp.status_code >= 400:
+                snippet = (resp.text or "")[:200].replace("\n", " ")
+                raise LLMClientError(
+                    f"Ollama HTTP {resp.status_code} streaming /api/chat: {snippet}"
+                )
+
+            return _consume_ollama_stream_plain(
+                resp, on_token, self.config.model, started,
+            )
 
         return _with_retries(
             do,
