@@ -48,7 +48,22 @@ _TEXT_EXTENSIONS: frozenset[str] = frozenset({
 
 # Chars-per-token approximation (OpenAI's cl100k_base rule of thumb).
 # We chunk by characters for simplicity; target tokens × 4 ≈ target chars.
+# Note: this UNDERESTIMATES tokens for code (more symbols per char). The
+# safe cap below leaves headroom for that.
 _CHARS_PER_TOKEN = 4
+
+# Default chunk target (in tokens) for ingestion. Was 500; lowered to 384
+# after live testing showed 500 was too close to BGE-large's 512-token
+# context window, especially on Python source where tokens-per-char is
+# higher than the 4:1 heuristic.
+_DEFAULT_CHUNK_SIZE_TOKENS = 384
+
+# Hard cap on chunk size (tokens). Any chunk larger than this gets truncated
+# at character boundaries before being returned. Must stay under the
+# embedding model's context window with margin.
+#   bge-large-en-v1.5: 512-token context.
+#   With margin for under-counting + special tokens: 480.
+_SAFE_CHUNK_TOKEN_CAP = 480
 
 # Max file size to ingest, in bytes. Protects against accidentally ingesting
 # a 500MB log file. Users can override via ingest(max_file_bytes=...).
@@ -98,12 +113,23 @@ class IngestResult:
 
 # ── Chunking ─────────────────────────────────────────────────────
 
-def chunk_text(text: str, *, chunk_size: int = 500, overlap: int = 50) -> list[str]:
+def chunk_text(
+    text: str,
+    *,
+    chunk_size: int = _DEFAULT_CHUNK_SIZE_TOKENS,
+    overlap: int = 50,
+) -> list[str]:
     """Split `text` into chunks of ~chunk_size tokens with ~overlap tokens of overlap.
 
     Chunk size is specified in tokens. We convert to characters using a
     4-chars-per-token approximation. The splitter tries to break on paragraph
     boundaries first, then line boundaries, then word boundaries.
+
+    Hard cap: every returned chunk is at most ``_SAFE_CHUNK_TOKEN_CAP`` tokens.
+    Chunks exceeding the cap (e.g. very dense code with no whitespace to split
+    on) are truncated at character boundaries. This protects the embedding
+    backend from "input length exceeds context length" errors on models with
+    a fixed context (BGE-large = 512 tokens).
 
     Empty input returns an empty list.
     """
@@ -113,10 +139,11 @@ def chunk_text(text: str, *, chunk_size: int = 500, overlap: int = 50) -> list[s
 
     char_target = chunk_size * _CHARS_PER_TOKEN
     char_overlap = overlap * _CHARS_PER_TOKEN
+    cap_chars = _SAFE_CHUNK_TOKEN_CAP * _CHARS_PER_TOKEN
 
-    # Short text fits in one chunk.
+    # Short text fits in one chunk — but still respect the hard cap.
     if len(text) <= char_target:
-        return [text]
+        return _enforce_cap([text], cap_chars)
 
     chunks: list[str] = []
     start = 0
@@ -133,7 +160,25 @@ def chunk_text(text: str, *, chunk_size: int = 500, overlap: int = 50) -> list[s
         # Step forward by (chunk_size - overlap).
         start = max(start + 1, end - char_overlap)
 
-    return chunks
+    return _enforce_cap(chunks, cap_chars)
+
+
+def _enforce_cap(chunks: list[str], cap_chars: int) -> list[str]:
+    """Ensure no chunk exceeds the cap. Splits oversized chunks into pieces."""
+    out: list[str] = []
+    for chunk in chunks:
+        if len(chunk) <= cap_chars:
+            out.append(chunk)
+            continue
+        # Split at character boundaries. We don't try to find clean breaks
+        # here — by definition this chunk had no clean break point in the
+        # main splitter. Hard truncation is acceptable; the alternative is
+        # the embedding call failing.
+        for i in range(0, len(chunk), cap_chars):
+            piece = chunk[i:i + cap_chars].strip()
+            if piece:
+                out.append(piece)
+    return out
 
 
 def _find_split_point(text: str, start: int, target_end: int) -> int:
@@ -254,7 +299,7 @@ class DocumentStore:
         self,
         path: Path | str,
         *,
-        chunk_size: int = 500,
+        chunk_size: int = _DEFAULT_CHUNK_SIZE_TOKENS,
         overlap: int = 50,
         on_progress: Optional[callable] = None,
     ) -> IngestResult:
