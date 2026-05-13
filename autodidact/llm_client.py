@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 from dataclasses import asdict, dataclass
 from typing import Any, Callable, Literal, Optional, TypeVar
@@ -52,7 +53,10 @@ class LLMConfig(BaseModel):
     bedrock_secret_access_key: Optional[str] = None
     bedrock_session_token: Optional[str] = None
     bedrock_api_key: Optional[str] = None
-    timeout_seconds: int = 60
+    # 300s (5 min) covers cold-start of 14B+ models. Bumped from 60s since
+    # we no longer retry ReadTimeouts (a single request must succeed within
+    # the timeout or we fail; retrying restarts the generation from scratch).
+    timeout_seconds: int = 300
     max_retries: int = 6
 
 
@@ -211,6 +215,39 @@ def _consume_ollama_stream(
         avg_logprob=avg_lp,
         top_logprobs_by_position=top_lps,
     )
+# ── Answer extraction (handles thinking models) ──────────────────
+#
+# Three response shapes seen in the wild:
+#   1. Plain content      — qwen2.5, llama, mistral. Just use content as-is.
+#   2. Inline <think>...</think> — DeepSeek-R1, qwen3 in some configs. The
+#      reasoning is wrapped in tags within `content`; the answer follows
+#      after the closing tag.
+#   3. Separate `thinking` field — qwen3:14b on current Ollama. `content`
+#      holds the answer, `thinking` holds the reasoning. We never expose
+#      `thinking` to the user, but if `content` is empty we fall back to
+#      it as a last-ditch so we don't return nothing.
+
+_THINK_TAG_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL | re.IGNORECASE)
+
+
+def _extract_answer(message: dict) -> str:
+    """Return the user-facing answer text from an Ollama chat message dict.
+
+    Handles thinking models without surfacing reasoning to the caller. If
+    both `content` and `thinking` are empty after cleanup, returns "".
+    """
+    content = (message.get("content") or "")
+    thinking = (message.get("thinking") or "")
+
+    # Strip any inline <think>...</think> blocks from content.
+    cleaned = _THINK_TAG_RE.sub("", content).strip()
+    if cleaned:
+        return cleaned
+
+    # Last-ditch: content is empty after stripping. If thinking has text,
+    # use it so the caller has SOMETHING to inspect (refusal detection,
+    # display to user, etc.).
+    return thinking.strip()
 
 
 def _with_retries(fn: Callable[[], T], max_retries: int, on_transient: tuple[type, ...]) -> T:
@@ -284,7 +321,19 @@ class LLMClient:
         def do() -> dict:
             try:
                 resp = requests.post(url, json=body, timeout=self.config.timeout_seconds)
-            except (requests.ConnectionError, requests.Timeout):
+            except requests.exceptions.ReadTimeout as e:
+                # ReadTimeout means the request reached Ollama and a generation
+                # was in progress when our timeout fired. Wrap as a non-retryable
+                # LLMClientError so callers get a uniform exception type instead
+                # of a raw requests-library error. _with_retries below does not
+                # list ReadTimeout as transient, so this propagates.
+                raise LLMClientError(
+                    f"Ollama read timeout after {self.config.timeout_seconds}s "
+                    f"at {path}. The model may need a longer timeout for cold "
+                    f"starts or large generations."
+                ) from e
+            except (requests.ConnectionError, requests.exceptions.ConnectTimeout):
+                # Connection-class — let _with_retries handle it.
                 raise
             if resp.status_code >= 400:
                 # 4xx / 5xx: don't retry 4xx; for 5xx we raise LLMClientError too (we could retry but keep it simple)
@@ -293,19 +342,33 @@ class LLMClient:
                 raise LLMClientError(f"Ollama HTTP {resp.status_code} at {path}: {snippet}")
             return resp.json()
 
-        return _with_retries(do, self.config.max_retries, (requests.ConnectionError, requests.Timeout))
+        # Retry policy: connection-class failures retry; ReadTimeout does NOT.
+        # A ReadTimeout means the request reached Ollama and a generation is in
+        # progress server-side; retrying restarts that generation from scratch
+        # while we still pay the same wall-time cost. Connection-class failures
+        # (ConnectionError, ConnectTimeout) are genuinely transient and worth
+        # retrying.
+        return _with_retries(
+            do,
+            self.config.max_retries,
+            (requests.ConnectionError, requests.exceptions.ConnectTimeout),
+        )
 
     def _chat_ollama(self, messages: list[ChatMessage], **opts: Any) -> ChatResponse:
+        # Optional `think` flag for thinking models (qwen3, deepseek-r1, etc.).
+        think = opts.pop("think", None)
         body = {
             "model": self.config.model,
             "messages": [asdict(m) for m in messages],
             "stream": False,
             "options": self._ollama_options(opts),
         }
+        if think is not None:
+            body["think"] = bool(think)
         started = time.perf_counter()
         data = self._ollama_post("/api/chat", body)
         latency_ms = int((time.perf_counter() - started) * 1000)
-        content = (data.get("message") or {}).get("content", "")
+        content = _extract_answer(data.get("message") or {})
         return ChatResponse(
             content=content,
             model=data.get("model", self.config.model),
@@ -320,6 +383,9 @@ class LLMClient:
         options = self._ollama_options(opts)
         options.setdefault("num_predict", options.get("max_tokens", 256))
         top_logprobs_k = int(opts.pop("top_logprobs", 5))
+        # Optional `think` flag for thinking models (qwen3, deepseek-r1, etc.).
+        # None = default (model's own setting); True/False = explicit.
+        think = opts.pop("think", None)
         # Ollama 0.12.11+ exposes logprobs via top-level fields on the /api/chat body,
         # not inside "options". Older versions silently ignore these and we degrade
         # gracefully to empty logprobs.
@@ -331,12 +397,14 @@ class LLMClient:
             "top_logprobs": top_logprobs_k,
             "options": options,
         }
+        if think is not None:
+            body["think"] = bool(think)
         started = time.perf_counter()
         data = self._ollama_post("/api/chat", body)
         latency_ms = int((time.perf_counter() - started) * 1000)
 
         message = data.get("message") or {}
-        content = message.get("content", "")
+        content = _extract_answer(message)
 
         # Parse logprobs. Ollama 0.12.11+ returns them at the TOP level of the
         # response body as:

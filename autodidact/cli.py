@@ -26,9 +26,12 @@ from autodidact.setup_wizard import (
     detect_ollama,
     get_cloud_preset,
     get_ollama_install_command,
+    install_ollama,
     is_model_available,
+    is_ollama_running,
     list_cloud_providers,
     pull_ollama_model,
+    start_ollama_daemon,
     verify_model_loadable,
 )
 from autodidact.thought_renderer import ThoughtRenderer
@@ -252,19 +255,108 @@ def init(
     console.print("  Run [cyan]autodidact --help[/cyan] for the full command list.")
 
 
+def _offer_to_install_ollama() -> bool:
+    """Show the install command and ask the user to confirm. Returns True if installed.
+
+    On Windows we cannot auto-install in v1.0; print manual instructions and
+    return False so the wizard exits cleanly.
+    """
+    import sys
+
+    console.print()
+    console.print("[yellow]Ollama is not installed on your system.[/yellow]")
+
+    if sys.platform == "win32":
+        console.print(
+            "  v1.0 doesn't auto-install Ollama on Windows. "
+            "Download the installer from [cyan]https://ollama.com/download/windows[/cyan], "
+            "run it, then re-run [cyan]autodidact init[/cyan]."
+        )
+        return False
+
+    cmd = get_ollama_install_command()
+    console.print(f"  Install command: [cyan]{cmd}[/cyan]")
+    console.print(
+        "  This downloads and runs the official installer from [cyan]ollama.com[/cyan].",
+        style="dim",
+    )
+
+    if not typer.confirm("Install Ollama now?", default=True):
+        return False
+
+    console.print("Installing Ollama...", style="dim")
+    if install_ollama():
+        console.print("✓ Ollama installed.", style="green")
+        return True
+
+    console.print(
+        "[red]Install failed.[/red] You can run the command manually:\n"
+        f"  [cyan]{cmd}[/cyan]"
+    )
+    return False
+
+
+def _offer_to_start_ollama() -> bool:
+    """Detect that Ollama isn't running and ask to start it. Returns True iff up."""
+    console.print()
+    console.print("[yellow]Ollama is installed but the daemon isn't running.[/yellow]")
+    if not typer.confirm("Start the Ollama daemon now?", default=True):
+        return False
+
+    console.print("Starting Ollama daemon...", style="dim")
+    if start_ollama_daemon(wait_timeout_s=20.0):
+        console.print("✓ Ollama daemon is running.", style="green")
+        return True
+
+    import sys
+    if sys.platform == "darwin":
+        console.print(
+            "[red]Could not start the daemon automatically.[/red] "
+            "macOS may have shown a Gatekeeper prompt for the Ollama app, "
+            "or asked to approve a background login item.\n"
+            "  • Approve any prompts in System Settings → Privacy & Security "
+            "and General → Login Items, then\n"
+            "  • Open the Ollama app from Applications, or run "
+            "[cyan]ollama serve[/cyan] in another terminal.\n"
+            "Then re-run [cyan]autodidact init[/cyan]."
+        )
+    else:
+        console.print(
+            "[red]Could not start the daemon automatically.[/red] "
+            "Try running [cyan]ollama serve[/cyan] in another terminal, "
+            "then re-run [cyan]autodidact init[/cyan]."
+        )
+    return False
+
+
 def _init_with_ollama(mode: str) -> dict:
-    """Run the Ollama-based init flow. Returns a config dict."""
+
     # Detect Ollama.
     status = detect_ollama()
     if not status.installed:
-        console.print(
-            "\n[yellow]Ollama is not installed on your system.[/yellow]",
-        )
-        cmd = get_ollama_install_command()
-        console.print(f"Install it with:  [cyan]{cmd}[/cyan]")
-        keep = typer.prompt("Continue anyway? (y/n)", default="n")
-        if keep.strip().lower() != "y":
-            console.print("Aborted. Install Ollama and re-run `autodidact init`.", style="yellow")
+        if not _offer_to_install_ollama():
+            console.print(
+                "Aborted. Install Ollama and re-run [cyan]autodidact init[/cyan].",
+                style="yellow",
+            )
+            raise typer.Exit(0)
+        # Re-detect after install.
+        status = detect_ollama()
+        if not status.installed:
+            console.print(
+                "[red]Install ran but Ollama still isn't on PATH.[/red] "
+                "You may need to restart your shell, then re-run "
+                "[cyan]autodidact init[/cyan].",
+            )
+            raise typer.Exit(1)
+
+    # Daemon needs to be running for pulls and embedding/chat calls.
+    if not is_ollama_running():
+        if not _offer_to_start_ollama():
+            console.print(
+                "Aborted. Start the Ollama daemon and re-run [cyan]autodidact init[/cyan].",
+                style="yellow",
+            )
             raise typer.Exit(0)
 
     # Hardware-aware default.

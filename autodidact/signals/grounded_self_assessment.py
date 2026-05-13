@@ -233,6 +233,13 @@ class SelfAssessment:
             max_tokens=1,
             temperature=0.0,
             top_logprobs=5,
+            # GSA is a single-token Y/N classification probe. Chain-of-thought
+            # has been shown in the literature to hurt calibration on tasks
+            # like this (overconfidence on wrong answers). We disable thinking
+            # for the probe regardless of user/agent thinking settings — the
+            # user can keep thinking on for chat without breaking GSA.
+            # See docs/HALLUCINATION-PROBLEM.md for the research notes.
+            think=False,
         )
         raw = response.content
 

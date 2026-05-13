@@ -63,13 +63,20 @@ class TestModelDetection:
         models = list_ollama_models()
         assert models == []
 
-    @patch("subprocess.run")
-    def test_checks_specific_model(self, mock_run):
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=["ollama", "list"],
-            returncode=0,
-            stdout="NAME              ID          SIZE\nqwen2.5:7b        abc123      4.7 GB\n",
-        )
+    @patch("autodidact.setup_wizard.requests.post")
+    def test_checks_specific_model(self, mock_post):
+        """is_model_available now asks Ollama via /api/show.
+
+        Real models return 200 with details.format='gguf'; missing models 404.
+        """
+        from unittest.mock import MagicMock
+        # First call: qwen2.5:7b is a real local model.
+        # Second call: llama3.2 is missing.
+        responses = [
+            MagicMock(status_code=200, json=lambda: {"details": {"format": "gguf"}}),
+            MagicMock(status_code=404),
+        ]
+        mock_post.side_effect = responses
         from autodidact.setup_wizard import is_model_available
         assert is_model_available("qwen2.5:7b") is True
         assert is_model_available("llama3.2") is False
