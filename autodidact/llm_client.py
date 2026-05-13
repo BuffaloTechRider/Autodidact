@@ -89,6 +89,11 @@ class ChatResponseWithLogprobs(ChatResponse):
     logprobs: list[float] = []
     avg_logprob: Optional[float] = None
     top_logprobs_by_position: list[dict[str, float]] = []
+    # True if the underlying generation included reasoning tokens (thinking
+    # field on Ollama, reasoningContent on Bedrock, etc.). Routing logic
+    # uses this to decide whether avg_logprob is a meaningful signal —
+    # thinking-token logprobs dilute the average and trigger false escalations.
+    had_thinking: bool = False
 
 
 # ── Exceptions ─────────────────────────────────────────────────────
@@ -214,6 +219,7 @@ def _consume_ollama_stream(
         logprobs=token_lps,
         avg_logprob=avg_lp,
         top_logprobs_by_position=top_lps,
+        had_thinking=bool(thinking_buf),
     )
 # ── Answer extraction (handles thinking models) ──────────────────
 #
@@ -451,6 +457,11 @@ class LLMClient:
             logprobs=token_lps,
             avg_logprob=avg_lp,
             top_logprobs_by_position=top_lps,
+            # Either a separate thinking field (current Ollama) or inline
+            # <think>...</think> tags in content (DeepSeek-R1, some qwen3
+            # configs) count as "had thinking".
+            had_thinking=bool(message.get("thinking"))
+            or bool(_THINK_TAG_RE.search(message.get("content") or "")),
         )
 
     def chat_stream_ollama(
