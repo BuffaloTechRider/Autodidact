@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import typer
 import yaml
@@ -749,8 +749,7 @@ def _handle_cloud_command(agent: Agent, line: str, renderer) -> None:
     else:
         question = arg
 
-    with console.status("[dim]Asking cloud...", spinner="dots"):
-        resp = agent.correct(question)
+    resp = _correct_with_spinner(agent, question)
     if renderer is not None:
         renderer.render_response(resp)
 
@@ -764,8 +763,7 @@ def _handle_wrong_command(agent: Agent, renderer) -> None:
     if not last_q:
         console.print("No previous question to correct.", style="yellow")
         return
-    with console.status("[dim]Re-verifying with cloud...", spinner="dots"):
-        resp = agent.correct(last_q)
+    resp = _correct_with_spinner(agent, last_q)
     if renderer is not None:
         renderer.render_response(resp)
 
@@ -822,35 +820,131 @@ def _gsa_current_version(agent: Agent) -> str:
 
 
 def _query_with_spinner(agent: Agent, question: str) -> QueryResponse:
-    """Run agent.query() while showing a 'thinking' spinner that updates per progress event.
+    """Run agent.query() with live streaming output. Wrapper over _run_with_spinner."""
+    return _run_with_spinner(lambda cb: agent.query(question, on_progress=cb))
 
-    The spinner text changes as the agent moves through its stages so the user
-    knows whether the latency is from memory search, local generation, or a
-    cloud round-trip.
+
+def _correct_with_spinner(agent: Agent, question: str) -> QueryResponse:
+    """Run agent.correct() with live streaming output. Wrapper over _run_with_spinner."""
+    return _run_with_spinner(lambda cb: agent.correct(question, on_progress=cb))
+
+
+def _run_with_spinner(call: Callable[[Callable[[dict], None]], QueryResponse]) -> QueryResponse:
+    """Run an agent operation that takes an on_progress callback, rendering live progress.
+
+    Two phases the user sees:
+      Spinner phase  — memory check, GSA probe, possibly thinking-token reasoning
+      Streaming phase — content tokens arrive live; we drop the spinner and
+                        print tokens directly so the user reads as it generates.
+
+    Tokens carry source='local' or 'cloud' so we tag them appropriately.
     """
+    state = {
+        "phase": None,             # "thinking" | "content" | None
+        "source": None,            # "local" | "cloud" | None
+        "thinking_buf": [],
+        "content_buf": [],
+        "rendering_live": False,    # True once we've left the spinner
+    }
+
+    def _start_streaming(source: str) -> None:
+        """Stop the spinner and print the route prefix for streaming output."""
+        if source == "cloud":
+            tag = "[bold blue][CLOUD][/bold blue] "
+        else:
+            tag = "[bold green][LOCAL][/bold green] "
+        # The status object is closed-over from the outer scope; tracked
+        # via state to keep the closure simple.
+        state["status"].stop()
+        console.print()  # whitespace under the spinner row
+        console.print(tag, end="")
+        state["rendering_live"] = True
+        state["phase"] = "content"
+        state["source"] = source
+
     with console.status("[dim]Thinking...", spinner="dots") as status:
+        state["status"] = status
+
         def on_progress(event: dict) -> None:
             et = event.get("type")
+
             if et == "thinking":
                 hits = event.get("memory_hits", 0)
                 if hits:
                     status.update(f"[dim]Checking memory... found {hits} similar entries")
                 else:
                     status.update("[dim]Checking memory...")
+
             elif et == "memory_hit":
                 status.update("[dim]Recalling from memory...")
+
+            elif et == "token":
+                phase = event.get("phase", "content")
+                source = event.get("source", "local")
+                text = event.get("text", "")
+                if not text:
+                    return
+
+                if phase == "thinking":
+                    if state["phase"] != "thinking":
+                        status.update("[dim]Thinking...")
+                        state["phase"] = "thinking"
+                    state["thinking_buf"].append(text)
+
+                elif phase == "content":
+                    # First content token from this source — drop spinner and
+                    # start printing tokens directly.
+                    if not state["rendering_live"] or state["source"] != source:
+                        if state["rendering_live"]:
+                            # Source switched (rare: local, then cloud during one query).
+                            # Close the previous line cleanly.
+                            console.print()
+                            state["rendering_live"] = False
+                            status.start()
+                        _start_streaming(source)
+                    console.print(text, end="", soft_wrap=True, highlight=False)
+                    state["content_buf"].append(text)
+
             elif et == "local_done":
-                conf = event.get("confidence", 0.0)
-                status.update(f"[dim]Local answer (confidence {conf:.2f})...")
+                # Non-streaming path (e.g. test mock or non-Ollama local).
+                if not state["rendering_live"]:
+                    conf = event.get("confidence", 0.0)
+                    status.update(f"[dim]Local answer (confidence {conf:.2f})...")
+
             elif et == "cloud_call":
+                # If we already streamed local content, finish that line.
+                if state["rendering_live"]:
+                    console.print()
+                    state["rendering_live"] = False
+                    state["source"] = None
+                    status.start()
                 model = event.get("model", "cloud")
                 status.update(f"[dim]Asking {model}...")
-            elif et == "cloud_done":
-                status.update("[dim]Got cloud answer, learning from it...")
-            elif et == "learning":
-                status.update("[dim]Storing new knowledge...")
 
-        return agent.query(question, on_progress=on_progress)
+            elif et == "cloud_done":
+                # Token-level streaming has already shown the answer; this
+                # event still fires after the stream ends. If we never
+                # streamed cloud (test mock), update the spinner.
+                if not state["rendering_live"]:
+                    status.update("[dim]Got cloud answer, learning from it...")
+
+            elif et == "learning":
+                if state["rendering_live"]:
+                    # Don't clobber the streamed answer; just print a hint.
+                    pass
+                else:
+                    status.update("[dim]Storing new knowledge...")
+
+        resp = call(on_progress)
+
+    # If we streamed any content live, the body is already on screen. Mark
+    # the response so the renderer prints only the footer (cost/route),
+    # not a duplicate of the body.
+    already_streamed = bool(state["content_buf"])
+    if already_streamed:
+        console.print()  # newline so the footer lands on its own row
+    setattr(resp, "_already_streamed", already_streamed)
+    return resp
 
 
 @app.command()

@@ -349,9 +349,7 @@ class Agent:
             return self._escalate_to_cloud(question, context, memory_hits, started, _emit)
 
         messages = self._build_messages(question, context, memory_hits)
-        local_resp = self._local_client.chat_with_logprobs(
-            messages, max_tokens=1024, temperature=0.0, top_logprobs=1,
-        )
+        local_resp = self._call_local(messages, _emit)
         confidence = self._compute_confidence(local_resp)
 
         # Refusal override: the local model can hedge or ask for clarification
@@ -402,12 +400,24 @@ class Agent:
         resp.gsa_p_yes = gsa_p_yes
         return resp
 
-    def correct(self, question: str) -> QueryResponse:
+    def correct(
+        self,
+        question: str,
+        *,
+        on_progress: ProgressCallback = None,
+    ) -> QueryResponse:
         """User says the last answer was wrong. Re-escalate to cloud and learn.
 
         Invalidates any matching memory entry and forces a fresh cloud answer.
+        Streams cloud tokens through ``on_progress`` (same contract as
+        ``query``) so the chat REPL can show output live.
         """
         started = time.perf_counter()
+
+        def _emit(event: dict) -> None:
+            if on_progress is not None:
+                on_progress(event)
+
         # Invalidate the closest memory entry for this question.
         if self._embed_client:
             q_emb = self._embed_client.embed(question)
@@ -423,7 +433,7 @@ class Agent:
                 learned=False, latency_ms=_elapsed_ms(started),
             )
 
-        return self._escalate_to_cloud(question, None, [], started)
+        return self._escalate_to_cloud(question, None, [], started, _emit)
 
     def savings(self) -> SavingsReport:
         """Return cumulative cost savings across all sessions (R6 AC2).
@@ -475,6 +485,76 @@ class Agent:
 
     # ── Internal ──────────────────────────────────────────────────
 
+    def _call_local(
+        self,
+        messages: list[ChatMessage],
+        emit: Callable[[dict], None],
+    ) -> ChatResponseWithLogprobs:
+        """Call the local model. Streams when on Ollama; falls back otherwise.
+
+        For Ollama we use ``chat_stream_ollama`` and forward each chunk through
+        the agent's progress callback as ``token`` events tagged with
+        ``source='local'`` and phase=='content' or 'thinking'. The CLI
+        renderer can then show tokens as they arrive, masking generation
+        latency.
+
+        For non-Ollama providers (OpenAI-compatible, Bedrock) we fall back to
+        the non-streaming ``chat_with_logprobs`` path. Streaming for those
+        providers is a future enhancement on the local-model side.
+
+        Tolerates clients that don't expose ``config.provider`` (notably mock
+        clients in tests) — falls back to the non-streaming path in that case.
+        """
+        assert self._local_client is not None
+        config = getattr(self._local_client, "config", None)
+        provider = getattr(config, "provider", None) if config is not None else None
+
+        if provider == "ollama":
+            def _on_chunk(chunk: dict) -> None:
+                emit({"type": "token", "source": "local", **chunk})
+
+            return self._local_client.chat_stream_ollama(
+                messages,
+                on_token=_on_chunk,
+                max_tokens=1024,
+                temperature=0.0,
+                top_logprobs=1,
+            )
+
+        # Non-Ollama or test mock: no streaming, use the normal path.
+        return self._local_client.chat_with_logprobs(
+            messages, max_tokens=1024, temperature=0.0, top_logprobs=1,
+        )
+
+    def _call_cloud(
+        self,
+        messages: list[ChatMessage],
+        emit: Callable[[dict], None],
+    ) -> ChatResponse:
+        """Call the cloud model with streaming when supported.
+
+        Forwards each chunk through ``emit`` as a ``token`` event tagged with
+        ``source='cloud'``. Falls back to non-streaming for clients without a
+        recognised provider (notably MagicMock fixtures in tests that don't
+        configure ``config.provider``).
+        """
+        assert self._cloud_client is not None
+        config = getattr(self._cloud_client, "config", None)
+        provider = getattr(config, "provider", None) if config is not None else None
+
+        if provider in ("ollama", "openai", "bedrock"):
+            def _on_chunk(chunk: dict) -> None:
+                emit({"type": "token", "source": "cloud", **chunk})
+            return self._cloud_client.chat_stream(
+                messages,
+                on_token=_on_chunk,
+                max_tokens=1024,
+                temperature=0.0,
+            )
+
+        # Test fallback or unknown provider: no streaming.
+        return self._cloud_client.chat(messages, max_tokens=1024, temperature=0.0)
+
     def _check_memory(self, question: str) -> list[ScoredKnowledgeEntry]:
         """Search the knowledge store for similar past Q&A."""
         if self._embed_client is None:
@@ -502,7 +582,7 @@ class Agent:
         emit({"type": "cloud_call", "model": self._cloud_model_name or "unknown"})
 
         messages = self._build_messages(question, context, memory_hits)
-        cloud_resp = self._cloud_client.chat(messages, max_tokens=1024, temperature=0.0)
+        cloud_resp = self._call_cloud(messages, emit)
         cost = self._estimate_cost(cloud_resp.input_tokens, cloud_resp.output_tokens)
 
         emit({

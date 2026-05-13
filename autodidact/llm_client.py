@@ -114,6 +114,105 @@ T = TypeVar("T")
 _BACKOFF_SECONDS = (1.0, 2.0, 4.0, 8.0, 16.0)
 
 
+# ── Streaming helper for Ollama /api/chat ─────────────────────────
+
+
+def _consume_ollama_stream(
+    resp: Any,
+    on_token: Callable[[dict], None],
+    fallback_model: str,
+    started: float,
+) -> "ChatResponseWithLogprobs":
+    """Read NDJSON chunks from an Ollama streaming response.
+
+    Each chunk has shape ``{"message": {"content": "...", "thinking": "..."},
+    "done": false}`` until the final chunk where ``done: true`` brings
+    ``prompt_eval_count``, ``eval_count``, and (on Ollama 0.12.11+) the full
+    logprobs array.
+
+    For each non-empty content/thinking delta, calls ``on_token`` with
+    ``{"phase": "content" | "thinking", "text": "..."}``. A bad NDJSON line
+    (rare; Ollama might write a partial chunk on error) is logged and
+    skipped, not fatal.
+    """
+    import json as _json
+
+    content_buf: list[str] = []
+    thinking_buf: list[str] = []
+    final_data: dict[str, Any] = {}
+
+    for raw_line in resp.iter_lines():
+        if not raw_line:
+            continue
+        try:
+            chunk = _json.loads(raw_line)
+        except (ValueError, TypeError) as e:
+            logger.warning("Ollama streaming chunk could not be parsed: %s", e)
+            continue
+
+        message = chunk.get("message") or {}
+        delta_content = message.get("content") or ""
+        delta_thinking = message.get("thinking") or ""
+
+        if delta_thinking:
+            thinking_buf.append(delta_thinking)
+            on_token({"phase": "thinking", "text": delta_thinking})
+        if delta_content:
+            content_buf.append(delta_content)
+            on_token({"phase": "content", "text": delta_content})
+
+        if chunk.get("done"):
+            final_data = chunk
+
+    latency_ms = int((time.perf_counter() - started) * 1000)
+
+    full_content = "".join(content_buf)
+    if not full_content.strip():
+        # Last-ditch fallback: if no content was streamed, use thinking as
+        # the visible answer. Mirrors _extract_answer's fallback.
+        full_content = "".join(thinking_buf).strip()
+
+    # Logprobs from the final chunk (top-level on 0.12.11+, message-level on older).
+    raw_lp = final_data.get("logprobs")
+    if raw_lp is None:
+        raw_lp = (final_data.get("message") or {}).get("logprobs")
+
+    token_lps: list[float] = []
+    top_lps: list[dict[str, float]] = []
+    if isinstance(raw_lp, list):
+        for item in raw_lp:
+            if isinstance(item, (int, float)):
+                token_lps.append(float(item))
+                top_lps.append({})
+            elif isinstance(item, dict):
+                lp = item.get("logprob")
+                if isinstance(lp, (int, float)):
+                    token_lps.append(float(lp))
+                top = item.get("top_logprobs")
+                if isinstance(top, dict):
+                    top_lps.append({str(k): float(v) for k, v in top.items()})
+                elif isinstance(top, list):
+                    top_lps.append({
+                        str(t.get("token", "")): float(t.get("logprob", 0.0))
+                        for t in top
+                        if isinstance(t, dict) and "token" in t
+                    })
+                else:
+                    top_lps.append({})
+    avg_lp = float(np.mean(token_lps)) if token_lps else None
+
+    return ChatResponseWithLogprobs(
+        content=full_content,
+        model=final_data.get("model", fallback_model),
+        input_tokens=int(final_data.get("prompt_eval_count", 0) or 0),
+        output_tokens=int(final_data.get("eval_count", 0) or 0),
+        latency_ms=latency_ms,
+        logprobs=token_lps,
+        avg_logprob=avg_lp,
+        top_logprobs_by_position=top_lps,
+    )
+
+
 def _with_retries(fn: Callable[[], T], max_retries: int, on_transient: tuple[type, ...]) -> T:
     """Run fn with exponential backoff on transient failures.
 
@@ -286,6 +385,74 @@ class LLMClient:
             top_logprobs_by_position=top_lps,
         )
 
+    def chat_stream_ollama(
+        self,
+        messages: list[ChatMessage],
+        *,
+        on_token: Callable[[dict], None],
+        **opts: Any,
+    ) -> ChatResponseWithLogprobs:
+        """Stream a chat response from Ollama, calling on_token per chunk.
+
+        Each ``on_token`` invocation receives ``{"phase": "content" | "thinking",
+        "text": "..."}``. This lets the caller render content directly to the
+        user while showing thinking dim/separately.
+
+        Returns a fully accumulated ``ChatResponseWithLogprobs`` after the
+        stream ends — the final chunk carries token counts and (on Ollama
+        0.12.11+) logprobs.
+
+        Retry policy mirrors the non-streaming path: ConnectionError /
+        ConnectTimeout retry, ReadTimeout fails fast.
+        """
+        options = self._ollama_options(opts)
+        options.setdefault("num_predict", options.get("max_tokens", 1024))
+        top_logprobs_k = int(opts.pop("top_logprobs", 5))
+        think = opts.pop("think", None)
+
+        body: dict[str, Any] = {
+            "model": self.config.model,
+            "messages": [asdict(m) for m in messages],
+            "stream": True,
+            "logprobs": True,
+            "top_logprobs": top_logprobs_k,
+            "options": options,
+        }
+        if think is not None:
+            body["think"] = bool(think)
+
+        url = f"{self._ollama_host}/api/chat"
+        started = time.perf_counter()
+
+        def do() -> ChatResponseWithLogprobs:
+            try:
+                resp = requests.post(
+                    url,
+                    json=body,
+                    stream=True,
+                    timeout=self.config.timeout_seconds,
+                )
+            except requests.exceptions.ReadTimeout as e:
+                raise LLMClientError(
+                    f"Ollama read timeout after {self.config.timeout_seconds}s "
+                    f"during streaming /api/chat. The model may need a longer "
+                    f"timeout for cold starts or large generations."
+                ) from e
+            except (requests.ConnectionError, requests.exceptions.ConnectTimeout):
+                raise
+
+            if resp.status_code >= 400:
+                snippet = (resp.text or "")[:200].replace("\n", " ")
+                raise LLMClientError(f"Ollama HTTP {resp.status_code} streaming /api/chat: {snippet}")
+
+            return _consume_ollama_stream(resp, on_token, self.config.model, started)
+
+        return _with_retries(
+            do,
+            self.config.max_retries,
+            (requests.ConnectionError, requests.exceptions.ConnectTimeout),
+        )
+
     def _embed_ollama(self, text: str) -> np.ndarray:
         model = self.config.embedding_model or self.config.model
         body = {"model": model, "prompt": text}
@@ -425,6 +592,81 @@ class LLMClient:
                 logprobs=token_lps,
                 avg_logprob=avg_lp,
                 top_logprobs_by_position=top_lps,
+            )
+
+        return _with_retries(do, self.config.max_retries, self._openai_transient_exceptions())
+
+    def chat_stream_openai(
+        self,
+        messages: list[ChatMessage],
+        *,
+        on_token: Callable[[dict], None],
+        **opts: Any,
+    ) -> ChatResponse:
+        """Stream a chat response from an OpenAI-compatible backend.
+
+        Calls ``on_token`` per content chunk with ``{"phase": "content",
+        "text": "..."}``. OpenAI's chat-completions stream doesn't carry a
+        separate thinking field, so all chunks are content-phase.
+
+        Returns the accumulated ``ChatResponse``. Token counts come from the
+        final stream chunk's ``usage`` field (set when ``stream_options=
+        {"include_usage": True}``).
+        """
+        client = self._get_openai_client()
+        kwargs: dict[str, Any] = {
+            "model": self.config.model,
+            "messages": [asdict(m) for m in messages],
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        if "max_tokens" in opts:
+            kwargs["max_tokens"] = int(opts["max_tokens"])
+        if "temperature" in opts:
+            kwargs["temperature"] = float(opts["temperature"])
+        if "top_p" in opts:
+            kwargs["top_p"] = float(opts["top_p"])
+        if "seed" in opts:
+            kwargs["seed"] = int(opts["seed"])
+
+        def do() -> ChatResponse:
+            started = time.perf_counter()
+            content_buf: list[str] = []
+            input_tokens = 0
+            output_tokens = 0
+            model = self.config.model
+
+            try:
+                stream = client.chat.completions.create(**kwargs)
+            except Exception as e:
+                self._maybe_raise_4xx("openai", e)
+                raise
+
+            for chunk in stream:
+                # Some chunks carry usage info; others carry content deltas.
+                usage = getattr(chunk, "usage", None)
+                if usage is not None:
+                    input_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+                    output_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+                model = getattr(chunk, "model", model) or model
+
+                choices = getattr(chunk, "choices", None) or []
+                for choice in choices:
+                    delta = getattr(choice, "delta", None)
+                    if delta is None:
+                        continue
+                    text = getattr(delta, "content", None) or ""
+                    if text:
+                        content_buf.append(text)
+                        on_token({"phase": "content", "text": text})
+
+            latency_ms = int((time.perf_counter() - started) * 1000)
+            return ChatResponse(
+                content="".join(content_buf),
+                model=model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                latency_ms=latency_ms,
             )
 
         return _with_retries(do, self.config.max_retries, self._openai_transient_exceptions())
@@ -604,6 +846,125 @@ class LLMClient:
             avg_logprob=None,
             top_logprobs_by_position=[],
         )
+
+    def chat_stream_bedrock(
+        self,
+        messages: list[ChatMessage],
+        *,
+        on_token: Callable[[dict], None],
+        **opts: Any,
+    ) -> ChatResponse:
+        """Stream a chat response from Bedrock via converse_stream.
+
+        Calls ``on_token`` per chunk with phase ``content`` for normal output
+        and phase ``thinking`` for ``reasoningContent`` blocks (Anthropic
+        extended thinking).
+
+        Throttling / validation errors are mapped to LLMClientError consistent
+        with the non-streaming path.
+        """
+        client = self._get_bedrock_client()
+        system, converse_messages = self._to_bedrock_messages(messages)
+        inference_config: dict[str, Any] = {}
+        if "max_tokens" in opts:
+            inference_config["maxTokens"] = int(opts["max_tokens"])
+        if "temperature" in opts:
+            inference_config["temperature"] = float(opts["temperature"])
+        if "top_p" in opts:
+            inference_config["topP"] = float(opts["top_p"])
+
+        kwargs: dict[str, Any] = {
+            "modelId": self.config.model,
+            "messages": converse_messages,
+        }
+        if system:
+            kwargs["system"] = system
+        if inference_config:
+            kwargs["inferenceConfig"] = inference_config
+
+        def do() -> ChatResponse:
+            started = time.perf_counter()
+            content_buf: list[str] = []
+            thinking_buf: list[str] = []
+            input_tokens = 0
+            output_tokens = 0
+
+            try:
+                response = client.converse_stream(**kwargs)
+            except Exception as e:
+                code = None
+                resp_dict = getattr(e, "response", None)
+                if isinstance(resp_dict, dict):
+                    code = (resp_dict.get("Error") or {}).get("Code")
+                if code in {"AccessDeniedException", "UnauthorizedException", "ValidationException"}:
+                    raise LLMClientError(f"Bedrock rejected request: {code}") from e
+                if self._is_bedrock_throttle(e):
+                    raise _BedrockThrottleError(f"Bedrock throttle ({code})") from e
+                raise
+
+            stream = response.get("stream") if isinstance(response, dict) else None
+            if stream is None:
+                # Some boto wrappers expose the iterator directly.
+                stream = response  # type: ignore[assignment]
+
+            for event in stream:
+                if not isinstance(event, dict):
+                    continue
+
+                # Content / thinking deltas.
+                delta_block = (event.get("contentBlockDelta") or {}).get("delta") or {}
+                text_delta = delta_block.get("text")
+                if text_delta:
+                    content_buf.append(text_delta)
+                    on_token({"phase": "content", "text": text_delta})
+
+                reasoning_text = (delta_block.get("reasoningContent") or {}).get("text")
+                if reasoning_text:
+                    thinking_buf.append(reasoning_text)
+                    on_token({"phase": "thinking", "text": reasoning_text})
+
+                # Final usage metadata block.
+                metadata = event.get("metadata") or {}
+                usage = metadata.get("usage") or {}
+                if usage:
+                    input_tokens = int(usage.get("inputTokens", input_tokens) or input_tokens)
+                    output_tokens = int(usage.get("outputTokens", output_tokens) or output_tokens)
+
+            latency_ms = int((time.perf_counter() - started) * 1000)
+            content = "".join(content_buf)
+            if not content.strip():
+                # Fall back to thinking if content was empty (mirrors _extract_answer).
+                content = "".join(thinking_buf).strip()
+
+            return ChatResponse(
+                content=content,
+                model=self.config.model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                latency_ms=latency_ms,
+            )
+
+        transient = self._bedrock_transient_exceptions() + (_BedrockThrottleError,)
+        return _with_retries(do, self.config.max_retries, transient)
+
+    def chat_stream(
+        self,
+        messages: list[ChatMessage],
+        *,
+        on_token: Callable[[dict], None],
+        **opts: Any,
+    ) -> ChatResponse:
+        """Provider-agnostic streaming chat. Routes by ``self.config.provider``.
+
+        Returns a ``ChatResponse`` (not ChatResponseWithLogprobs — streaming
+        cloud paths don't expose logprobs in v1.0; the local path returns
+        the richer type via ``chat_stream_ollama`` directly).
+        """
+        if self.config.provider == "ollama":
+            return self.chat_stream_ollama(messages, on_token=on_token, **opts)
+        if self.config.provider == "openai":
+            return self.chat_stream_openai(messages, on_token=on_token, **opts)
+        return self.chat_stream_bedrock(messages, on_token=on_token, **opts)
 
     def _to_bedrock_messages(
         self, messages: list[ChatMessage]

@@ -49,8 +49,14 @@ class ThoughtRenderer:
         """Render a complete query response with route tag, answer, cost, and confidence."""
         route = resp.routed_to.upper()  # "local" → "LOCAL"
 
+        # If the spinner already streamed the body live, skip re-printing it
+        # (would double the answer). The spinner sets _already_streamed on
+        # the response when it's done so. Footer still prints below.
+        already_streamed = bool(getattr(resp, "_already_streamed", False))
+
         # Route tag + answer.
-        self._tag(route, resp.answer)
+        if not already_streamed:
+            self._tag(route, resp.answer)
 
         # Memory source attribution (R2 AC4).
         if resp.routed_to == "memory" and resp.memory_source:
