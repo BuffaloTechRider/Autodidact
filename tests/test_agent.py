@@ -21,8 +21,17 @@ from autodidact.types import AutodidactConfig, NewKnowledgeEntry
 def mock_local_client():
     """A mock local LLM client that returns controllable responses."""
     client = MagicMock(spec=LLMClient)
-    # Default: confident local answer.
-    client.chat_with_logprobs.return_value = ChatResponseWithLogprobs(
+    # Default: confident local answer. Mocked on BOTH chat and chat_with_logprobs
+    # because Agent._call_local now uses chat() for non-Ollama; tests that
+    # override chat_with_logprobs.return_value should also override chat.return_value.
+    default_chat = ChatResponse(
+        content="Paris is the capital of France.",
+        model="qwen2.5:7b",
+        input_tokens=50,
+        output_tokens=10,
+        latency_ms=500,
+    )
+    default_chat_lp = ChatResponseWithLogprobs(
         content="Paris is the capital of France.",
         model="qwen2.5:7b",
         input_tokens=50,
@@ -32,6 +41,8 @@ def mock_local_client():
         avg_logprob=-0.13,  # high confidence after sigmoid
         top_logprobs_by_position=[],
     )
+    client.chat.return_value = default_chat
+    client.chat_with_logprobs.return_value = default_chat_lp
     # Embedding: return a fixed 32-dim vector.
     client.embed.return_value = np.random.RandomState(42).randn(32).astype(np.float32)
     return client
@@ -86,23 +97,6 @@ class TestRouting:
         assert resp.learned is False
         agent._cloud_client.chat.assert_not_called()
 
-    def test_low_confidence_escalates_to_cloud(self, agent_with_mocks):
-        """When logprob confidence is low, escalate to cloud."""
-        agent = agent_with_mocks
-        # Set avg_logprob very negative → low confidence.
-        agent._local_client.chat_with_logprobs.return_value = ChatResponseWithLogprobs(
-            content="I think it might be Lyon?",
-            model="qwen2.5:7b",
-            avg_logprob=-3.0,  # sigmoid(2*(-3)+3) = sigmoid(-3) ≈ 0.05
-            logprobs=[-3.0],
-            top_logprobs_by_position=[],
-        )
-        resp = agent.query("What is the GDP of France?")
-        assert resp.routed_to == "cloud"
-        assert resp.cost_usd > 0
-        assert resp.learned is True
-        agent._cloud_client.chat.assert_called_once()
-
     def test_no_local_model_goes_to_cloud(self, agent_with_mocks):
         """Without a local model, everything goes to cloud."""
         agent = agent_with_mocks
@@ -121,6 +115,7 @@ class TestRouting:
             logprobs=[-3.0],
             top_logprobs_by_position=[],
         )
+        agent._local_client.chat.return_value = ChatResponse(content="Maybe Lyon?", model="qwen2.5:7b")
         resp = agent.query("What is the GDP of France?")
         assert resp.routed_to == "local"
         assert resp.learned is False
@@ -133,9 +128,10 @@ class TestMemory:
         """Cloud escalation should store the Q&A in the knowledge store."""
         agent = agent_with_mocks
         agent._local_client.chat_with_logprobs.return_value = ChatResponseWithLogprobs(
-            content="dunno", model="qwen2.5:7b", avg_logprob=-3.0,
+            content="I don't have real-time data on that.", model="qwen2.5:7b", avg_logprob=-3.0,
             logprobs=[-3.0], top_logprobs_by_position=[],
         )
+        agent._local_client.chat.return_value = ChatResponse(content="I don't have real-time data on that.", model="qwen2.5:7b")
         resp = agent.query("What is quantum entanglement?")
         assert resp.learned is True
         assert agent.memory.count() == 1
@@ -145,9 +141,10 @@ class TestMemory:
         agent = agent_with_mocks
         # Make local always uncertain so it escalates.
         agent._local_client.chat_with_logprobs.return_value = ChatResponseWithLogprobs(
-            content="dunno", model="qwen2.5:7b", avg_logprob=-3.0,
+            content="I don't have real-time data on that.", model="qwen2.5:7b", avg_logprob=-3.0,
             logprobs=[-3.0], top_logprobs_by_position=[],
         )
+        agent._local_client.chat.return_value = ChatResponse(content="I don't have real-time data on that.", model="qwen2.5:7b")
         # Same embedding for both queries (mocked embed returns same vector).
         agent.query("What is quantum entanglement?")
         assert agent.memory.count() == 1
@@ -164,9 +161,10 @@ class TestCorrection:
         agent = agent_with_mocks
         # First: escalate and learn.
         agent._local_client.chat_with_logprobs.return_value = ChatResponseWithLogprobs(
-            content="dunno", model="qwen2.5:7b", avg_logprob=-3.0,
+            content="I don't have real-time data on that.", model="qwen2.5:7b", avg_logprob=-3.0,
             logprobs=[-3.0], top_logprobs_by_position=[],
         )
+        agent._local_client.chat.return_value = ChatResponse(content="I don't have real-time data on that.", model="qwen2.5:7b")
         agent.query("What year did the Berlin Wall fall?")
         assert agent.memory.count() == 1
 
@@ -252,21 +250,23 @@ class TestStaleMemoryFallthrough:
         agent._cloud_client.chat.assert_not_called()
 
     def test_stale_memory_with_uncertain_local_escalates(self, agent_with_mocks):
-        """Stale memory + uncertain local model → escalate to cloud.
+        """Stale memory + local refuses to answer → escalate to cloud.
 
-        This is the case where escalation is actually warranted: the stored
-        answer is old AND the local model isn't confident enough to replace it.
+        With logprob gating removed, the post-local check is the refusal
+        detector. Local saying "I don't know" still triggers escalation.
         """
         agent = agent_with_mocks
         self._seed_stale_memory(agent, "What's the latest OpenAI model?", "gpt-4o.")
-        # Make local model uncertain.
+        # Make local model refuse so the refusal detector escalates.
+        refusal = "I don't know what the latest model is."
         agent._local_client.chat_with_logprobs.return_value = ChatResponseWithLogprobs(
-            content="I'm not sure, maybe gpt-4?",
+            content=refusal,
             model="qwen2.5:7b",
-            avg_logprob=-3.0,  # very low confidence
+            avg_logprob=-3.0,
             logprobs=[-3.0],
             top_logprobs_by_position=[],
         )
+        agent._local_client.chat.return_value = ChatResponse(content=refusal, model="qwen2.5:7b")
 
         resp = agent.query("What's the latest OpenAI model?")
 
@@ -312,7 +312,7 @@ class TestStaleMemoryFallthrough:
         resp = agent.query("What is the capital of France?")
 
         assert resp.routed_to == "local"
-        agent._local_client.chat_with_logprobs.assert_called_once()
+        agent._local_client.chat.assert_called_once()
 
 
 class TestDocumentContextIntegration:
@@ -348,7 +348,7 @@ class TestDocumentContextIntegration:
 
         # The local client's chat_with_logprobs should have been called with
         # messages whose system prompt mentions "documents".
-        call = agent_with_mocks._local_client.chat_with_logprobs.call_args
+        call = agent_with_mocks._local_client.chat.call_args
         messages = call[0][0] if call[0] else call[1].get("messages")
         system_msg = next((m for m in messages if m.role == "system"), None)
         assert system_msg is not None
@@ -375,7 +375,7 @@ class TestDocumentContextIntegration:
 
         agent_with_mocks.query("What is our remote work policy?")
 
-        call = agent_with_mocks._local_client.chat_with_logprobs.call_args
+        call = agent_with_mocks._local_client.chat.call_args
         messages = call[0][0] if call[0] else call[1].get("messages")
         system_msg = next((m for m in messages if m.role == "system"), None)
         assert system_msg is not None
@@ -387,7 +387,7 @@ class TestDocumentContextIntegration:
         """Without a document store attached, the prompt has no document section."""
         agent_with_mocks.query("Random question")
 
-        call = agent_with_mocks._local_client.chat_with_logprobs.call_args
+        call = agent_with_mocks._local_client.chat.call_args
         messages = call[0][0] if call[0] else call[1].get("messages")
         system_msg = next((m for m in messages if m.role == "system"), None)
         assert system_msg is not None

@@ -126,6 +126,10 @@ class TestRefusalRouting:
             logprobs=[-0.2],
             top_logprobs_by_position=[],
         )
+        agent._local_client.chat.return_value = ChatResponse(content=(
+                "I don't have real-time data access, but you can check "
+                "weather.com for current San Jose weather."
+            ), model="qwen2.5:7b")
 
         resp = agent.query("how is the weather in San Jose today")
 
@@ -144,6 +148,10 @@ class TestRefusalRouting:
             logprobs=[-0.15],
             top_logprobs_by_position=[],
         )
+        agent._local_client.chat.return_value = ChatResponse(content=(
+                "It seems there might be a typo in your query. "
+                "Are you referring to OpenCL instead of openclaw?"
+            ), model="qwen2.5:7b")
 
         resp = agent.query("tell me more about openclaw")
 
@@ -159,6 +167,7 @@ class TestRefusalRouting:
             logprobs=[-0.13],
             top_logprobs_by_position=[],
         )
+        agent._local_client.chat.return_value = ChatResponse(content="Paris is the capital of France.", model="qwen2.5:7b")
 
         resp = agent.query("What is the capital of France?")
 
@@ -175,6 +184,7 @@ class TestRefusalRouting:
             logprobs=[-0.2],
             top_logprobs_by_position=[],
         )
+        agent._local_client.chat.return_value = ChatResponse(content="I don't have real-time data access.", model="qwen2.5:7b")
 
         resp = agent.query("weather today?")
 
@@ -192,6 +202,7 @@ class TestRefusalRouting:
             logprobs=[-0.3],
             top_logprobs_by_position=[],
         )
+        agent._local_client.chat.return_value = ChatResponse(content="I don't know.", model="qwen2.5:7b")
 
         resp = agent.query("what's 2+2?")
 

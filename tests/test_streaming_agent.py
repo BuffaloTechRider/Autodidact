@@ -26,22 +26,22 @@ from autodidact.types import AutodidactConfig
 
 @pytest.fixture
 def mock_local_client():
-    """Local: Ollama (streaming aware), low-confidence response forces escalation."""
+    """Local: Ollama (streaming aware), refusal response forces escalation."""
     cli = MagicMock(spec=LLMClient)
     cli.config = LLMConfig(provider="ollama", model="qwen3:14b")
     cli.embed.return_value = np.random.RandomState(0).randn(32).astype(np.float32)
 
     def fake_stream(messages, *, on_token, **opts):
-        on_token({"phase": "content", "text": "I dunno."})
-        return ChatResponseWithLogprobs(
-            content="I dunno.",
+        # A phrase the refusal detector recognizes — forces escalation now
+        # that we no longer gate on logprobs.
+        text = "I don't have real-time data on that."
+        on_token({"phase": "content", "text": text})
+        return ChatResponse(
+            content=text,
             model="qwen3:14b",
-            avg_logprob=-3.0,  # forces low confidence -> escalate
-            logprobs=[-3.0],
-            top_logprobs_by_position=[],
         )
 
-    cli.chat_stream_ollama.side_effect = fake_stream
+    cli.chat_stream_ollama_no_logprobs.side_effect = fake_stream
     return cli
 
 

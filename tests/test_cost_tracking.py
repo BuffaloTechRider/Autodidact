@@ -41,6 +41,7 @@ def agent_with_db():
         avg_logprob=-0.13,
         top_logprobs_by_position=[],
     )
+    local.chat.return_value = ChatResponse(content="Paris is the capital of France.", model="qwen2.5:7b")
     local.embed.return_value = np.random.RandomState(42).randn(32).astype(np.float32)
 
     cloud = MagicMock(spec=LLMClient)
@@ -85,9 +86,10 @@ class TestQueryLogPersistence:
         """A cloud-escalated query should appear in query_log with cost > 0."""
         agent = agent_with_db
         agent._local_client.chat_with_logprobs.return_value = ChatResponseWithLogprobs(
-            content="dunno", model="qwen2.5:7b", avg_logprob=-3.0,
+            content="I don't have real-time data on that.", model="qwen2.5:7b", avg_logprob=-3.0,
             logprobs=[-3.0], top_logprobs_by_position=[],
         )
+        agent._local_client.chat.return_value = ChatResponse(content="I don't have real-time data on that.", model="qwen2.5:7b")
         agent.query("What is the GDP of France?")
 
         rows = agent._conn.execute("SELECT * FROM query_log").fetchall()
@@ -170,9 +172,10 @@ class TestCumulativeSavings:
         agent = agent_with_db
         # Force cloud escalation to learn.
         agent._local_client.chat_with_logprobs.return_value = ChatResponseWithLogprobs(
-            content="dunno", model="qwen2.5:7b", avg_logprob=-3.0,
+            content="I don't have real-time data on that.", model="qwen2.5:7b", avg_logprob=-3.0,
             logprobs=[-3.0], top_logprobs_by_position=[],
         )
+        agent._local_client.chat.return_value = ChatResponse(content="I don't have real-time data on that.", model="qwen2.5:7b")
         agent.query("What is quantum entanglement?")
 
         report = agent.savings()
