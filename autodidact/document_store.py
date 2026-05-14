@@ -22,7 +22,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, Iterator, Optional
+from typing import Any, Iterable, Iterator, Optional
 
 import numpy as np
 
@@ -47,10 +47,15 @@ _TEXT_EXTENSIONS: frozenset[str] = frozenset({
 })
 
 # Chars-per-token approximation (OpenAI's cl100k_base rule of thumb).
-# We chunk by characters for simplicity; target tokens × 4 ≈ target chars.
-# Note: this UNDERESTIMATES tokens for code (more symbols per char). The
-# safe cap below leaves headroom for that.
+# We chunk by characters for the fast path; only the cap-enforcement step
+# uses the real BGE tokenizer when available.
 _CHARS_PER_TOKEN = 4
+
+# When the BGE tokenizer can't be loaded (offline / dependency missing),
+# we fall back to char-based capping with a much stricter ratio. 2.5
+# chars-per-token is conservative for code-dense inputs without being so
+# strict that prose gets over-split.
+_FALLBACK_CHARS_PER_TOKEN = 2.5
 
 # Default chunk target (in tokens) for ingestion. Was 500; lowered to 384
 # after live testing showed 500 was too close to BGE-large's 512-token
@@ -58,9 +63,9 @@ _CHARS_PER_TOKEN = 4
 # higher than the 4:1 heuristic.
 _DEFAULT_CHUNK_SIZE_TOKENS = 384
 
-# Hard cap on chunk size (tokens). Any chunk larger than this gets truncated
-# at character boundaries before being returned. Must stay under the
-# embedding model's context window with margin.
+# Hard cap on chunk size (tokens). Any chunk larger than this gets split
+# before being returned. Must stay under the embedding model's context
+# window with margin.
 #   bge-large-en-v1.5: 512-token context.
 #   With margin for under-counting + special tokens: 480.
 _SAFE_CHUNK_TOKEN_CAP = 480
@@ -109,6 +114,45 @@ class IngestResult:
     files_ingested: int
     chunks_created: int
     files_skipped: int = 0
+
+
+# ── Tokenizer (BGE-large) for accurate cap enforcement ──────────
+
+# Loaded lazily and cached at module level. Keeping it None until first
+# use lets `tokenizers` be a soft dependency — if it can't be imported
+# (offline install with no cache, or the lib is genuinely missing), we
+# fall back to a stricter chars-per-token heuristic.
+_BGE_TOKENIZER: Any = None
+_BGE_TOKENIZER_LOADED = False
+
+
+def _get_bge_tokenizer():
+    """Return the cached BGE-large tokenizer, or None if unavailable.
+
+    The first call attempts to load it; subsequent calls reuse the result
+    (success or None). This is hot-path code during ingestion — we only
+    pay the load cost once per process.
+    """
+    global _BGE_TOKENIZER, _BGE_TOKENIZER_LOADED
+    if _BGE_TOKENIZER_LOADED:
+        return _BGE_TOKENIZER
+    _BGE_TOKENIZER_LOADED = True
+    try:
+        from tokenizers import Tokenizer  # type: ignore
+        _BGE_TOKENIZER = Tokenizer.from_pretrained("BAAI/bge-large-en-v1.5")
+    except Exception:
+        # Offline, no cache, or tokenizers not installed. Caller falls
+        # back to char-based capping.
+        _BGE_TOKENIZER = None
+    return _BGE_TOKENIZER
+
+
+def _count_bge_tokens(text: str) -> Optional[int]:
+    """Real BGE token count, or None if the tokenizer is unavailable."""
+    tok = _get_bge_tokenizer()
+    if tok is None:
+        return None
+    return len(tok.encode(text).ids)
 
 
 # ── Chunking ─────────────────────────────────────────────────────
@@ -164,20 +208,81 @@ def chunk_text(
 
 
 def _enforce_cap(chunks: list[str], cap_chars: int) -> list[str]:
-    """Ensure no chunk exceeds the cap. Splits oversized chunks into pieces."""
+    """Ensure no chunk exceeds the BGE 480-token cap.
+
+    Strategy:
+      1. If the BGE tokenizer is available, count real tokens. Any chunk
+         over the cap is split in half (recursively) until each piece fits.
+         This is correct by construction.
+      2. If the tokenizer can't load, fall back to character-based capping
+         with a stricter ratio (2.5 chars/token instead of 4). This is
+         conservative — it produces smaller chunks than necessary on prose,
+         but doesn't blow the 512 ceiling on dense code.
+    """
+    tok = _get_bge_tokenizer()
+    if tok is not None:
+        return _split_by_real_tokens(chunks, _SAFE_CHUNK_TOKEN_CAP)
+
+    # Fallback: stricter char-based cap.
+    fallback_cap_chars = int(_SAFE_CHUNK_TOKEN_CAP * _FALLBACK_CHARS_PER_TOKEN)
     out: list[str] = []
     for chunk in chunks:
-        if len(chunk) <= cap_chars:
+        if len(chunk) <= fallback_cap_chars:
             out.append(chunk)
             continue
-        # Split at character boundaries. We don't try to find clean breaks
-        # here — by definition this chunk had no clean break point in the
-        # main splitter. Hard truncation is acceptable; the alternative is
-        # the embedding call failing.
-        for i in range(0, len(chunk), cap_chars):
-            piece = chunk[i:i + cap_chars].strip()
+        for i in range(0, len(chunk), fallback_cap_chars):
+            piece = chunk[i:i + fallback_cap_chars].strip()
             if piece:
                 out.append(piece)
+    return out
+
+
+def _split_by_real_tokens(chunks: list[str], token_cap: int) -> list[str]:
+    """Recursively split chunks until each piece is under ``token_cap`` BGE tokens.
+
+    Splits at character midpoints when the chunk has no obvious structural
+    boundary inside it. The previous implementation used hard char-boundary
+    truncation when the chunker couldn't find a break — we keep that
+    fallback at the leaf, but only when bisection alone can't bring a
+    piece under the cap (which only happens for pathological inputs like
+    single-line 5KB strings).
+    """
+    out: list[str] = []
+    for chunk in chunks:
+        if _count_bge_tokens(chunk) <= token_cap:
+            out.append(chunk)
+            continue
+        out.extend(_bisect_until_under_cap(chunk, token_cap))
+    return out
+
+
+def _bisect_until_under_cap(chunk: str, token_cap: int, *, max_depth: int = 12) -> list[str]:
+    """Halve `chunk` until each piece fits under the token cap."""
+    if max_depth <= 0:
+        return [chunk[:len(chunk) // 2], chunk[len(chunk) // 2:]]
+
+    if _count_bge_tokens(chunk) <= token_cap:
+        return [chunk]
+
+    mid = _find_split_point(chunk, 0, len(chunk) // 2 + len(chunk) // 4) or len(chunk) // 2
+    if mid <= 0 or mid >= len(chunk):
+        mid = len(chunk) // 2
+
+    left = chunk[:mid].strip()
+    right = chunk[mid:].strip()
+
+    # Defensive: if the split degenerated to all-on-one-side, force a
+    # midpoint so we always make progress.
+    if not left or not right:
+        mid = len(chunk) // 2
+        left = chunk[:mid].strip()
+        right = chunk[mid:].strip()
+
+    out: list[str] = []
+    if left:
+        out.extend(_bisect_until_under_cap(left, token_cap, max_depth=max_depth - 1))
+    if right:
+        out.extend(_bisect_until_under_cap(right, token_cap, max_depth=max_depth - 1))
     return out
 
 

@@ -39,6 +39,7 @@ dependencies = [
     "rich>=13.0",
     "typer>=0.9",
     "pyyaml>=6.0",
+    "tokenizers>=0.20",
 ]
 
 [project.urls]
