@@ -319,23 +319,30 @@ class Agent:
             and self._local_client is not None
             and self._cloud_client is not None
         ):
+            # The GSA probe is best-effort — a probe failure must not block
+            # the actual query. The try/except scope is deliberately narrow:
+            # ONLY the probe call. Escalation errors must propagate so the
+            # user sees the real problem instead of a misleading "GSA failed".
             try:
                 if getattr(self, "_gsa", None) is None:
                     self._gsa = SelfAssessment(self._local_client)
                 gsa_result = self._gsa.compute(question, retrieved_hits=memory_hits)
                 gsa_p_yes = gsa_result.p_yes
-                if gsa_p_yes < gsa_threshold:
-                    # Model self-reports it can't answer — skip local entirely.
-                    resp = self._escalate_to_cloud(
-                        question, context, memory_hits, started, _emit,
-                    )
-                    resp.escalated_on_gsa = True
-                    resp.gsa_p_yes = gsa_p_yes
-                    return resp
             except Exception as e:
-                # GSA is a best-effort signal. A probe failure must not block
-                # the actual query — fall through to the normal path.
                 logger.warning("GSA probe failed, skipping gate: %s", e)
+                gsa_p_yes = None
+
+            if gsa_p_yes is not None and gsa_p_yes < gsa_threshold:
+                # Model self-reports it can't answer — skip local entirely.
+                # Note: errors from _escalate_to_cloud propagate (no try/except
+                # wrapping it) so the user sees real problems like "Bedrock
+                # rejected request: ValidationException".
+                resp = self._escalate_to_cloud(
+                    question, context, memory_hits, started, _emit,
+                )
+                resp.escalated_on_gsa = True
+                resp.gsa_p_yes = gsa_p_yes
+                return resp
 
         # ── Stage 2: Generate locally ────────────────────────────
         if self._local_client is None:

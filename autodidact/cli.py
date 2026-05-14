@@ -22,8 +22,13 @@ from rich.console import Console
 from autodidact.agent import Agent, QueryResponse, SavingsReport
 from autodidact.hardware import detect_hardware, recommended_local_model
 from autodidact.setup_wizard import (
+    BedrockDiscoveryError,
+    OpenRouterDiscoveryError,
+    OpenRouterModel,
     build_config,
     detect_ollama,
+    discover_bedrock_models,
+    discover_openrouter_models,
     get_cloud_preset,
     get_ollama_install_command,
     install_ollama,
@@ -630,10 +635,23 @@ def _prompt_model_name(preset: dict, *, slot: str) -> str:
     return _pick_cloud_model(preset, slot=slot)
 
 
+_BROWSE_OPENROUTER_CHOICE = "↪ Browse all OpenRouter models (live)"
+
+
 def _prompt_openai_compat_config(provider: str, preset: dict, slot: str) -> dict:
-    """Prompt for an OpenAI-compatible provider: API key + model."""
+    """Prompt for an OpenAI-compatible provider: API key + model.
+
+    OpenRouter gets a special ``Browse all`` entry in the picker that hits
+    the public ``/v1/models`` endpoint. The catalogue is hundreds of models
+    long and changes weekly; the curated preset can't keep up, and slug
+    typos lose users at chat time.
+    """
     api_key = typer.prompt("  API key")
-    model = _prompt_model_name(preset, slot=slot)
+
+    if provider == "openrouter":
+        model = _pick_openrouter_model(preset, slot=slot)
+    else:
+        model = _prompt_model_name(preset, slot=slot)
 
     return {
         "provider": provider,
@@ -643,8 +661,75 @@ def _prompt_openai_compat_config(provider: str, preset: dict, slot: str) -> dict
     }
 
 
+def _pick_openrouter_model(preset: dict, *, slot: str) -> str:
+    """Picker for OpenRouter: curated preset + 'Browse all' + 'Other'."""
+    models = list(preset.get("models") or [])
+    default = preset.get("default_cheap", "")
+    if slot in ("cloud", "expensive"):
+        default = preset.get("default_expensive") or default
+    if not default and models:
+        default = models[0]
+
+    choices = list(models) + [_BROWSE_OPENROUTER_CHOICE, _OTHER_CHOICE]
+    chosen = _pick_from_list("Model", choices, default if default in models else choices[0])
+
+    if chosen == _BROWSE_OPENROUTER_CHOICE:
+        return _browse_openrouter_models()
+    if chosen == _OTHER_CHOICE:
+        return typer.prompt("Model name").strip()
+    return chosen
+
+
+def _browse_openrouter_models() -> str:
+    """Fetch the live OpenRouter catalogue and let the user pick.
+
+    Falls back to a free-form prompt with the original error if discovery
+    fails (network down, 5xx, parse error).
+    """
+    try:
+        models = discover_openrouter_models()
+    except OpenRouterDiscoveryError as e:
+        console.print(f"  [yellow]Could not list OpenRouter models:[/yellow] {e}")
+        console.print(
+            "  [dim]Falling back to manual entry. "
+            "Browse the catalogue at https://openrouter.ai/models[/dim]",
+        )
+        return typer.prompt("  Model ID").strip()
+
+    if not models:
+        console.print("  [yellow]OpenRouter returned no usable models.[/yellow]")
+        return typer.prompt("  Model ID").strip()
+
+    # Build labeled rows: "id  ($X.XX / $Y.YY per 1M)". The picker still
+    # returns the raw choice string so we keep id + label correspondence
+    # via a parallel map.
+    rows: list[str] = []
+    label_to_id: dict[str, str] = {}
+    for m in models:
+        label = (
+            f"{m.id}  "
+            f"(${m.prompt_per_million:.2f} in / ${m.completion_per_million:.2f} out per 1M)"
+        )
+        rows.append(label)
+        label_to_id[label] = m.id
+
+    rows.append(_OTHER_CHOICE)
+    label_to_id[_OTHER_CHOICE] = ""  # sentinel — handled below
+
+    console.print(f"  [dim]{len(models)} models, sorted cheapest first.[/dim]")
+    chosen = _pick_from_list("OpenRouter model", rows, rows[0])
+    if chosen == _OTHER_CHOICE:
+        return typer.prompt("  Model ID").strip()
+    return label_to_id[chosen]
+
+
 def _prompt_bedrock_config(preset: dict, slot: str) -> dict:
-    """Prompt for Bedrock: auth mode + region + model. No generic API key."""
+    """Prompt for Bedrock: auth mode + region + model. No generic API key.
+
+    The model list is *discovered* at this point by querying Bedrock with
+    the supplied region + auth. If discovery fails (no creds, no perms,
+    network), we fall back to a free-form prompt and surface the error.
+    """
     console.print("  Bedrock auth mode:")
     console.print("    1. IAM Role / default credential chain  (env vars, ~/.aws/credentials, SSO, IMDS)")
     console.print("    2. IAM User  (paste aws_access_key_id and aws_secret_access_key)")
@@ -672,7 +757,46 @@ def _prompt_bedrock_config(preset: dict, slot: str) -> dict:
     region = typer.prompt("  AWS region", default="us-west-2")
     bedrock_cfg["region"] = region
 
-    model = _prompt_model_name(preset, slot=slot)
+    # ── Live model discovery ─────────────────────────────────────
+    discovered: list[str] = []
+    discovery_error: Optional[BedrockDiscoveryError] = None
+    try:
+        discovered = discover_bedrock_models(
+            region=region,
+            auth_mode=auth_mode,
+            access_key_id=bedrock_cfg.get("access_key_id"),
+            secret_access_key=bedrock_cfg.get("secret_access_key"),
+            session_token=bedrock_cfg.get("session_token"),
+            api_key=bedrock_cfg.get("api_key"),
+        )
+    except BedrockDiscoveryError as e:
+        discovery_error = e
+
+    if discovered:
+        # Suggest a sensible default per slot if available.
+        prefer_cheap = ("haiku", "nova-micro", "nova-lite")
+        prefer_expensive = ("sonnet", "opus", "nova-pro", "nova-premier")
+        keywords = prefer_cheap if slot == "cheap" else prefer_expensive
+        default = next(
+            (m for kw in keywords for m in discovered if kw in m.lower()),
+            discovered[0],
+        )
+        choices = list(discovered) + [_OTHER_CHOICE]
+        chosen = _pick_from_list("Bedrock model", choices, default)
+        if chosen == _OTHER_CHOICE:
+            model = typer.prompt("  Model ID").strip()
+        else:
+            model = chosen
+    else:
+        if discovery_error is not None:
+            console.print(
+                f"  [yellow]Could not list Bedrock models:[/yellow] {discovery_error}",
+            )
+            console.print(
+                "  [dim]Falling back to manual entry. "
+                "Find IDs at https://docs.aws.amazon.com/bedrock/latest/userguide/models-supported.html[/dim]",
+            )
+        model = typer.prompt("  Model ID").strip()
 
     return {
         "provider": "bedrock",
