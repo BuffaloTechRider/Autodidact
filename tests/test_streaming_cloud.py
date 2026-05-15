@@ -183,6 +183,7 @@ class TestBedrockStreaming:
         assert "".join(t["text"] for t in content) == "Paris."
 
     def test_validation_error_raises_llm_client_error(self, bedrock_client):
+        botocore = pytest.importorskip("botocore")
         from botocore.exceptions import ClientError as BotoClientError
 
         err = BotoClientError(
