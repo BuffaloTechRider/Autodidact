@@ -146,6 +146,51 @@ class KnowledgeStore:
             verbatim_response=entry.verbatim_response,
         )
 
+    def insert_batch(self, entries: list[NewKnowledgeEntry]) -> int:
+        """Insert multiple entries in a single transaction. Returns count inserted."""
+        if not entries:
+            return 0
+        # Validate dim on first entry with an embedding.
+        for entry in entries:
+            if entry.embedding is not None:
+                new_dim = len(entry.embedding)
+                existing_dim = self._get_existing_embedding_dim()
+                if existing_dim is not None and existing_dim != new_dim:
+                    raise MixedEmbeddingDimensionError(
+                        f"Cannot batch-insert embeddings of dim {new_dim}: "
+                        f"store contains {existing_dim}-dim embeddings."
+                    )
+                break
+        now = datetime.now(timezone.utc).isoformat()
+        count = 0
+        for entry in entries:
+            entry_id = str(uuid.uuid4())
+            embedding_blob = None
+            if entry.embedding is not None:
+                embedding_blob = np.array(entry.embedding, dtype=np.float32).tobytes()
+            answer_embedding_blob = None
+            if entry.answer_embedding is not None:
+                answer_embedding_blob = np.array(entry.answer_embedding, dtype=np.float32).tobytes()
+            self.conn.execute(
+                """INSERT INTO knowledge_entries
+                (id, content, question, source, confidence, tags, embedding, answer_embedding,
+                 tier, usage_count,
+                 created_at, last_accessed, metadata, domain, topic, category,
+                 valid_from, valid_to, verbatim_response)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'STM', 0, ?, ?, ?, ?, ?, ?, ?, NULL, ?)""",
+                (
+                    entry_id, entry.content, entry.question, entry.source,
+                    entry.confidence, json.dumps(entry.tags), embedding_blob,
+                    answer_embedding_blob, now, now, json.dumps(entry.metadata),
+                    entry.domain, entry.topic, entry.category.value, now,
+                    entry.verbatim_response,
+                ),
+            )
+            count += 1
+        self.conn.commit()
+        self._faiss_dirty = True
+        return count
+
     def search(
         self,
         query_embedding: np.ndarray,

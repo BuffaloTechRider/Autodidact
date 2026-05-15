@@ -676,6 +676,17 @@ def build_config(
         if expensive_cloud_bedrock:
             config["cloud"]["bedrock"] = expensive_cloud_bedrock
 
+    elif mode == "local_local":
+        config["local"] = {
+            "model": local_model or "qwen3:4b",
+            "embedding_model": embedding_model or "qllama/bge-large-en-v1.5",
+        }
+        if cloud_provider == "ollama" and cloud_model:
+            config["cloud"] = {
+                "provider": "ollama",
+                "model": cloud_model,
+            }
+
     elif mode == "local_only":
         config["local"] = {
             "model": local_model or "qwen3:4b",

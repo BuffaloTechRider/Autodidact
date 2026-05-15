@@ -189,13 +189,17 @@ def _agent_from_config(config: dict) -> Agent:
     agent = Agent(**kwargs)
 
     # Attach a DocumentStore so ingested docs are retrieved alongside memory (R9).
+    # Also wire in KnowledgeStore + LLM client for document synthesis.
     if agent._embed_client is not None:
         from autodidact.document_store import DocumentStore
 
+        extractor_client = agent._local_client or agent._cloud_client
         agent.attach_document_store(DocumentStore(
             agent._conn,
             agent._embed_client,
             embedding_dim=agent._config.embedding_dim,
+            knowledge_store=agent.memory,
+            extractor_client=extractor_client,
         ))
 
     return agent
@@ -233,7 +237,7 @@ def init(
     console.print()
     mode = _pick_setup_mode()
 
-    if mode in ("local_cloud", "local_only"):
+    if mode in ("local_cloud", "local_only", "local_local"):
         config = _init_with_ollama(mode)
     else:
         config = _init_cloud_to_cloud()
@@ -396,6 +400,19 @@ def _init_with_ollama(mode: str) -> dict:
             cloud_api_key=cloud_cfg["api_key"],
             cloud_base_url=cloud_cfg.get("base_url"),
             cloud_bedrock=cloud_cfg.get("bedrock"),
+        )
+
+    # Local+Local: small model already chosen above; pick a bigger one for escalation.
+    if mode == "local_local":
+        console.print("\n[bold]Big model[/bold] (escalation target — slower but smarter):")
+        big_model = _pick_local_model(recommended="qwen2.5:14b")
+        _pull_and_verify(big_model, label="Big model")
+        return build_config(
+            mode="local_local",
+            local_model=local_model,
+            embedding_model=embedding_model,
+            cloud_provider="ollama",
+            cloud_model=big_model,
         )
 
     return build_config(
@@ -594,10 +611,11 @@ def _pick_cloud_model(preset: dict, *, slot: str) -> str:
 
 
 def _pick_setup_mode() -> str:
-    """Show the 3 setup modes as a list; return the canonical key."""
+    """Show the 4 setup modes as a list; return the canonical key."""
     labels = [
         "Local + Cloud   — Ollama local + cloud for escalation (best savings)",
         "Cloud + Cloud   — cheap cloud + expensive cloud (no GPU needed)",
+        "Local + Local   — small Ollama + big Ollama (free, fully offline, still learns)",
         "Local only      — Ollama only, no cloud (free, no learning escalations)",
     ]
     chosen = _pick_from_list("Pick a setup mode", labels, labels[0])
@@ -605,6 +623,8 @@ def _pick_setup_mode() -> str:
         return "local_cloud"
     if "Cloud + Cloud" in chosen:
         return "cloud_cloud"
+    if "Local + Local" in chosen:
+        return "local_local"
     return "local_only"
 
 
@@ -1378,11 +1398,17 @@ def learn(
             chunks = evt.get("chunks", 0)
             total = evt.get("total_files", 0)
             console.print(f"  [{total}] {f} → {chunks} chunks", style="dim")
+        elif evt.get("type") == "synthesized":
+            f = Path(evt.get("file", "")).name
+            facts = evt.get("facts", 0)
+            console.print(f"  ✦ {f} → {facts} facts learned", style="cyan")
 
     result = agent.documents.ingest(target, on_progress=_progress)
 
     console.print("─── Ingestion Complete ───", style="bold green")
     console.print(f"  Files ingested:  {result.files_ingested}")
     console.print(f"  Chunks created:  {result.chunks_created}")
+    if agent._embed_client and agent._local_client and result.files_ingested > 0:
+        console.print("  Synthesizing knowledge in background...", style="cyan")
     if result.files_skipped > 0:
         console.print(f"  Files skipped:   {result.files_skipped}", style="yellow")

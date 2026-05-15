@@ -158,8 +158,8 @@ class TestInitCommand:
         from autodidact.setup_wizard import OllamaStatus
         mock_detect.return_value = OllamaStatus(installed=True, path="/usr/local/bin/ollama")
         config_path = tmp_path / "config.yaml"
-        # mode=3 (local-only), local model default, db path
-        input_text = "3\nqwen2.5:7b\n" + str(tmp_path / "memory.db") + "\n"
+        # mode=4 (local-only), local model default, db path
+        input_text = "4\nqwen2.5:7b\n" + str(tmp_path / "memory.db") + "\n"
 
         result = runner.invoke(
             app, ["init", "--config-path", str(config_path)], input=input_text
@@ -229,8 +229,8 @@ class TestInitCommand:
         from autodidact.setup_wizard import OllamaStatus
         mock_detect.return_value = OllamaStatus(installed=True, path="/usr/local/bin/ollama")
         config_path = tmp_path / "config.yaml"
-        # mode=3 (local-only), defaults
-        input_text = "3\n\n\n"
+        # mode=4 (local-only), defaults
+        input_text = "4\n\n\n"
 
         runner.invoke(app, ["init", "--config-path", str(config_path)], input=input_text)
 
@@ -286,6 +286,7 @@ class TestLearnCommand:
         mock_result.files_ingested = 1
         mock_result.chunks_created = 3
         mock_result.files_skipped = 0
+        mock_result.facts_synthesized = 0
         mock_agent.documents.ingest.return_value = mock_result
         MockAgent.return_value = mock_agent
 
@@ -308,6 +309,7 @@ class TestLearnCommand:
         mock_result.files_ingested = 5
         mock_result.chunks_created = 12
         mock_result.files_skipped = 0
+        mock_result.facts_synthesized = 0
         mock_agent.documents.ingest.return_value = mock_result
         MockAgent.return_value = mock_agent
 

@@ -130,8 +130,8 @@ class TestProgressEventsLocalRoute:
 class TestProgressEventsCloudRoute:
     """When query escalates to cloud, the right events fire."""
 
-    def test_cloud_route_emits_cloud_call_and_learning(self, agent_with_mocks):
-        """Cloud route: thinking → cloud_call → cloud_done → learning."""
+    def test_cloud_route_emits_cloud_call_and_cloud_done(self, agent_with_mocks):
+        """Cloud route: thinking → cloud_call → cloud_done. Learning is async (no event)."""
         agent = agent_with_mocks
         agent._local_client.chat_with_logprobs.return_value = ChatResponseWithLogprobs(
             content="I don't have real-time data on that.", model="qwen2.5:7b", avg_logprob=-3.0,
@@ -146,7 +146,6 @@ class TestProgressEventsCloudRoute:
         assert "thinking" in event_types
         assert "cloud_call" in event_types
         assert "cloud_done" in event_types
-        assert "learning" in event_types
 
     def test_cloud_done_event_has_cost(self, agent_with_mocks):
         """The cloud_done event should include cost and latency."""
@@ -165,8 +164,8 @@ class TestProgressEventsCloudRoute:
         assert "cost" in cloud_done[0]
         assert "model" in cloud_done[0]
 
-    def test_learning_event_has_count(self, agent_with_mocks):
-        """The learning event should report how many entries were stored."""
+    def test_learning_happens_in_background(self, agent_with_mocks):
+        """Learning from escalation runs async — response returns before learning completes."""
         agent = agent_with_mocks
         agent._local_client.chat_with_logprobs.return_value = ChatResponseWithLogprobs(
             content="I don't have real-time data on that.", model="qwen2.5:7b", avg_logprob=-3.0,
@@ -174,13 +173,11 @@ class TestProgressEventsCloudRoute:
         )
         agent._local_client.chat.return_value = ChatResponse(content="I don't have real-time data on that.", model="qwen2.5:7b")
 
-        events = []
-        agent.query("Hard question", on_progress=lambda e: events.append(e))
+        resp = agent.query("Hard question")
 
-        learning = [e for e in events if e["type"] == "learning"]
-        assert len(learning) == 1
-        assert "knowledge_count" in learning[0]
-        assert learning[0]["knowledge_count"] >= 1
+        # Response reports learned=True (optimistic) even before background completes
+        assert resp.learned is True
+        assert resp.routed_to == "cloud"
 
 
 class TestProgressEventsMemoryRoute:

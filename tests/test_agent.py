@@ -133,6 +133,7 @@ class TestMemory:
         )
         agent._local_client.chat.return_value = ChatResponse(content="I don't have real-time data on that.", model="qwen2.5:7b")
         resp = agent.query("What is quantum entanglement?")
+        agent._last_learn_thread.join(timeout=5)
         assert resp.learned is True
         assert agent.memory.count() == 1
 
@@ -147,8 +148,10 @@ class TestMemory:
         agent._local_client.chat.return_value = ChatResponse(content="I don't have real-time data on that.", model="qwen2.5:7b")
         # Same embedding for both queries (mocked embed returns same vector).
         agent.query("What is quantum entanglement?")
+        agent._last_learn_thread.join(timeout=5)
         assert agent.memory.count() == 1
         agent.query("Explain quantum entanglement")
+        agent._last_learn_thread.join(timeout=5)
         # Should deduplicate (same embedding → sim > 0.95 → replace).
         assert agent.memory.count() == 1
 
@@ -166,6 +169,7 @@ class TestCorrection:
         )
         agent._local_client.chat.return_value = ChatResponse(content="I don't have real-time data on that.", model="qwen2.5:7b")
         agent.query("What year did the Berlin Wall fall?")
+        agent._last_learn_thread.join(timeout=5)
         assert agent.memory.count() == 1
 
         # Correct: should invalidate old, store new.
@@ -174,6 +178,7 @@ class TestCorrection:
             model="gpt-4o", input_tokens=50, output_tokens=10,
         )
         resp = agent.correct("What year did the Berlin Wall fall?")
+        agent._last_learn_thread.join(timeout=5)
         assert resp.routed_to == "cloud"
         assert resp.learned is True
         # Old entry invalidated, new one stored.

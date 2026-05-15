@@ -193,12 +193,40 @@ CREATE TABLE IF NOT EXISTS document_chunks (
 
 CREATE INDEX IF NOT EXISTS idx_dc_source_file ON document_chunks(source_file);
 CREATE INDEX IF NOT EXISTS idx_dc_created_at ON document_chunks(created_at);
+
+-- ── FTS5 full-text search for document chunks (v1.5: hybrid retrieval) ──
+-- External-content FTS5 table kept in sync via triggers.
+-- Enables BM25 keyword search alongside vector similarity.
+CREATE VIRTUAL TABLE IF NOT EXISTS document_chunks_fts USING fts5(
+    content,
+    source_file,
+    content='document_chunks',
+    content_rowid='rowid',
+    tokenize='porter unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS dc_fts_insert AFTER INSERT ON document_chunks BEGIN
+    INSERT INTO document_chunks_fts(rowid, content, source_file)
+    VALUES (new.rowid, new.content, new.source_file);
+END;
+
+CREATE TRIGGER IF NOT EXISTS dc_fts_delete AFTER DELETE ON document_chunks BEGIN
+    INSERT INTO document_chunks_fts(document_chunks_fts, rowid, content, source_file)
+    VALUES ('delete', old.rowid, old.content, old.source_file);
+END;
+
+CREATE TRIGGER IF NOT EXISTS dc_fts_update AFTER UPDATE ON document_chunks BEGIN
+    INSERT INTO document_chunks_fts(document_chunks_fts, rowid, content, source_file)
+    VALUES ('delete', old.rowid, old.content, old.source_file);
+    INSERT INTO document_chunks_fts(rowid, content, source_file)
+    VALUES (new.rowid, new.content, new.source_file);
+END;
 """
 
 
 def init_database(db_path: str = "autodidact.db") -> sqlite3.Connection:
     """Initialize the SQLite database with the Autodidact schema."""
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
 
     # Backfill migrations FIRST, before executescript -
@@ -280,4 +308,22 @@ def init_database(db_path: str = "autodidact.db") -> sqlite3.Connection:
         pass
 
     conn.executescript(SCHEMA_SQL)
+
+    # Backfill FTS5 for existing document_chunks (users upgrading from v1.0).
+    try:
+        fts_count = conn.execute(
+            "SELECT COUNT(*) FROM document_chunks_fts"
+        ).fetchone()[0]
+        chunk_count = conn.execute(
+            "SELECT COUNT(*) FROM document_chunks"
+        ).fetchone()[0]
+        if chunk_count > 0 and fts_count == 0:
+            conn.execute(
+                "INSERT INTO document_chunks_fts(rowid, content, source_file) "
+                "SELECT rowid, content, source_file FROM document_chunks"
+            )
+            conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
     return conn

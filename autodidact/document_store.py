@@ -114,6 +114,7 @@ class IngestResult:
     files_ingested: int
     chunks_created: int
     files_skipped: int = 0
+    facts_synthesized: int = 0
 
 
 # ── Tokenizer (BGE-large) for accurate cap enforcement ──────────
@@ -393,10 +394,14 @@ class DocumentStore:
         embed_client: LLMClient,
         *,
         embedding_dim: int = 1024,
+        knowledge_store=None,
+        extractor_client: Optional[LLMClient] = None,
     ) -> None:
         self.conn = conn
         self._embed_client = embed_client
         self._embedding_dim = embedding_dim
+        self._knowledge_store = knowledge_store
+        self._extractor_client = extractor_client
 
     # ── Public API ────────────────────────────────────────────────
 
@@ -457,6 +462,19 @@ class DocumentStore:
                     "total_files": files_ingested,
                 })
 
+        # Synthesis pass: extract key facts into the knowledge store.
+        # Runs in a background thread so ingest returns immediately.
+        # Progress callback is NOT passed to the thread — Rich console
+        # is not thread-safe and the main thread may be in interactive mode.
+        if self._knowledge_store is not None and self._extractor_client is not None:
+            import threading
+            thread = threading.Thread(
+                target=self._run_synthesis,
+                args=(path, None),
+                daemon=True,
+            )
+            thread.start()
+
         return IngestResult(
             files_ingested=files_ingested,
             chunks_created=chunks_created,
@@ -497,6 +515,77 @@ class DocumentStore:
 
         scored.sort(key=lambda s: s.score, reverse=True)
         return scored[:limit]
+
+    def search_bm25(self, query: str, *, limit: int = 10) -> list[ScoredChunk]:
+        """BM25 keyword search via FTS5.
+
+        Returns chunks ranked by BM25 relevance. Falls back to empty list
+        if FTS5 table is not populated or query has no matches.
+        """
+        try:
+            rows = self.conn.execute(
+                "SELECT dc.id, dc.content, dc.source_file, dc.chunk_index, "
+                "dc.embedding, dc.tags, dc.created_at, f.rank "
+                "FROM document_chunks_fts f "
+                "JOIN document_chunks dc ON dc.rowid = f.rowid "
+                "WHERE document_chunks_fts MATCH ? "
+                "ORDER BY f.rank "
+                "LIMIT ?",
+                (query, limit),
+            ).fetchall()
+        except Exception as e:
+            logger.debug("BM25 search failed (FTS5 may not be populated): %s", e)
+            return []
+
+        scored: list[ScoredChunk] = []
+        for row in rows:
+            chunk = _row_to_chunk(row)
+            bm25_rank = float(row["rank"])
+            score = 1.0 / (1.0 + abs(bm25_rank))
+            scored.append(ScoredChunk(chunk=chunk, score=score))
+        return scored
+
+    def search_hybrid(self, query: str, *, limit: int = 5) -> list[ScoredChunk]:
+        """Hybrid BM25 + vector search merged via Reciprocal Rank Fusion.
+
+        Runs both retrieval methods, combines results using RRF (k=60),
+        and returns the top `limit` results by fused score. Documents found
+        by both methods are ranked higher than those found by only one.
+        """
+        vector_results = self.search(query, limit=limit * 3)
+        bm25_results = self.search_bm25(query, limit=limit * 3)
+
+        if not vector_results and not bm25_results:
+            return []
+        if not bm25_results:
+            return vector_results[:limit]
+        if not vector_results:
+            return bm25_results[:limit]
+
+        RRF_K = 60
+        vector_ranks: dict[str, int] = {
+            r.chunk.id: rank for rank, r in enumerate(vector_results)
+        }
+        bm25_ranks: dict[str, int] = {
+            r.chunk.id: rank for rank, r in enumerate(bm25_results)
+        }
+
+        all_ids = set(vector_ranks.keys()) | set(bm25_ranks.keys())
+        chunk_map: dict[str, DocumentChunk] = {}
+        for r in vector_results:
+            chunk_map[r.chunk.id] = r.chunk
+        for r in bm25_results:
+            chunk_map[r.chunk.id] = r.chunk
+
+        fused: list[ScoredChunk] = []
+        for chunk_id in all_ids:
+            v_rank = vector_ranks.get(chunk_id, len(vector_results) + 1)
+            b_rank = bm25_ranks.get(chunk_id, len(bm25_results) + 1)
+            rrf_score = 1.0 / (RRF_K + v_rank) + 1.0 / (RRF_K + b_rank)
+            fused.append(ScoredChunk(chunk=chunk_map[chunk_id], score=rrf_score))
+
+        fused.sort(key=lambda s: s.score, reverse=True)
+        return fused[:limit]
 
     def count(self) -> int:
         """Total number of chunks in the store."""
@@ -541,6 +630,68 @@ class DocumentStore:
         self.conn.execute("DELETE FROM document_chunks")
         self.conn.commit()
 
+    # ── Synthesis ─────────────────────────────────────────────────
+
+    def _run_synthesis(self, path: Path | str, on_progress: Optional[callable]) -> None:
+        """Background: extract key facts from ingested documents into knowledge store.
+
+        Runs in a daemon thread. Groups chunks by file into ~2000-token sections,
+        runs LLM extraction on each, and batch-inserts results into the knowledge
+        store (10 facts per commit to minimize write lock contention with the
+        main chat thread).
+        """
+        from autodidact.learning_extractor import LearningExtractor
+
+        extractor = LearningExtractor(self._extractor_client)
+        path = Path(path)
+        max_sections_per_file = 20
+        batch_size = 10
+        batch: list = []
+
+        for file_path in walk_files(path):
+            try:
+                text = file_path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+
+            if not text.strip():
+                continue
+
+            sections = _group_into_sections(text, max_tokens=2000)
+            file_facts = 0
+
+            for section in sections[:max_sections_per_file]:
+                try:
+                    result = extractor.extract_from_document(section, str(file_path))
+                    for entry in result.knowledge:
+                        try:
+                            emb = self._embed_client.embed(entry.question or entry.content)
+                            entry.embedding = emb.tolist()
+                            batch.append(entry)
+                            file_facts += 1
+
+                            if len(batch) >= batch_size:
+                                self._knowledge_store.insert_batch(batch)
+                                batch = []
+                        except Exception as e:
+                            logger.warning("Failed to embed synthesized fact: %s", e)
+                except Exception as e:
+                    logger.warning("Synthesis failed for section of %s: %s", file_path, e)
+
+            if file_facts > 0:
+                if on_progress is not None:
+                    on_progress({
+                        "type": "synthesized",
+                        "file": str(file_path),
+                        "facts": file_facts,
+                    })
+                else:
+                    logger.info("Synthesized %d facts from %s", file_facts, file_path.name)
+
+        # Flush remaining batch.
+        if batch:
+            self._knowledge_store.insert_batch(batch)
+
     # ── Internals ─────────────────────────────────────────────────
 
     def _insert_chunk(
@@ -581,6 +732,38 @@ class DocumentStore:
 
 
 # ── Helpers ──────────────────────────────────────────────────────
+
+
+def _group_into_sections(text: str, max_tokens: int = 2000) -> list[str]:
+    """Group text into sections of approximately max_tokens each.
+
+    Tries to split on paragraph boundaries (double newline) to keep
+    sections semantically coherent.
+    """
+    char_budget = max_tokens * _CHARS_PER_TOKEN
+    paragraphs = text.split("\n\n")
+    sections: list[str] = []
+    current: list[str] = []
+    current_len = 0
+
+    for para in paragraphs:
+        para = para.strip()
+        if not para:
+            continue
+        para_len = len(para)
+        if current_len + para_len > char_budget and current:
+            sections.append("\n\n".join(current))
+            current = [para]
+            current_len = para_len
+        else:
+            current.append(para)
+            current_len += para_len
+
+    if current:
+        sections.append("\n\n".join(current))
+
+    return sections
+
 
 def _normalize(v: np.ndarray) -> np.ndarray:
     """L2-normalize a vector; zero vectors return as-is."""

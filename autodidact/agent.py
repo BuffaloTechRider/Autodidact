@@ -55,7 +55,7 @@ _DEFAULT_COST_RATES = {
 # ── Similarity thresholds for memory retrieval tiers ───────────────
 MEMORY_DIRECT_THRESHOLD = 0.85   # return stored answer directly
 MEMORY_CONTEXT_THRESHOLD = 0.60  # inject as reference context
-MEMORY_STALENESS_DAYS = 7        # re-verify entries older than this
+MEMORY_STALENESS_DAYS = 30        # re-verify entries older than this
 
 
 # ── Response model ─────────────────────────────────────────────────
@@ -261,19 +261,12 @@ class Agent:
         })
 
         if best_hit and best_hit.score >= MEMORY_DIRECT_THRESHOLD:
-            # Direct memory answer — no generation needed.
             entry = best_hit.entry
             self.memory.access(entry.id)
             age_days = self._entry_age_days(entry)
             is_stale = age_days > self.staleness_days
 
             if is_stale:
-                # Stale memory: fall through to Stage 2 (local generation).
-                # Many facts are stable for months or years; escalating every
-                # stale hit wastes cloud dollars on queries local can handle.
-                # Only escalate if local is ALSO uncertain — matching the
-                # original routing intent: escalate when uncertain, not when
-                # memory is merely old.
                 logger.info(
                     "Memory hit is stale (%.1f days old); falling through to local",
                     age_days,
@@ -286,20 +279,28 @@ class Agent:
                     "age_days": age_days,
                 })
 
-                latency = _elapsed_ms(started)
-                self._record_query("memory", 0.0, best_hit.score, latency, question=question)
-                self._append_history(question, entry.content)
-                return QueryResponse(
-                    answer=entry.content,
-                    routed_to="memory",
-                    confidence=best_hit.score,
-                    cost_usd=0.0,
-                    learned=False,
-                    latency_ms=latency,
-                    memory_source=entry.question,
-                    memory_age_days=age_days,
-                    stale=False,
-                )
+                if self._local_client is not None:
+                    # Generate a full answer using memory as context.
+                    messages = self._build_messages(question, context, memory_hits)
+                    local_resp = self._local_client.chat(
+                        messages, max_tokens=1024, temperature=0.0,
+                    )
+                    answer = local_resp.content
+
+                    latency = _elapsed_ms(started)
+                    self._record_query("memory", 0.0, best_hit.score, latency, question=question)
+                    self._append_history(question, answer)
+                    return QueryResponse(
+                        answer=answer,
+                        routed_to="memory",
+                        confidence=best_hit.score,
+                        cost_usd=0.0,
+                        learned=False,
+                        latency_ms=latency,
+                        memory_source=entry.question,
+                        memory_age_days=age_days,
+                        stale=False,
+                    )
 
         # ── Stage 1.5: GSA pre-gate ──────────────────────────────
         # Ask the local model itself: "can you answer this?" before spending
@@ -605,21 +606,25 @@ class Agent:
             "latency_ms": cloud_resp.latency_ms,
         })
 
-        # Learn from escalation.
-        learned, knowledge_count = self._learn(question, cloud_resp.content)
-
-        if learned:
-            emit({"type": "learning", "knowledge_count": knowledge_count})
+        # Learn from escalation in background — don't block the user.
+        import threading
+        t = threading.Thread(
+            target=self._learn,
+            args=(question, cloud_resp.content),
+            daemon=True,
+        )
+        t.start()
+        self._last_learn_thread = t
 
         latency = _elapsed_ms(started)
-        self._record_query("cloud", cost, 0.0, latency, learned=learned, question=question)
+        self._record_query("cloud", cost, 0.0, latency, learned=True, question=question)
         self._append_history(question, cloud_resp.content)
         return QueryResponse(
             answer=cloud_resp.content,
             routed_to="cloud",
-            confidence=0.0,  # we escalated because confidence was low
+            confidence=0.0,
             cost_usd=cost,
-            learned=learned,
+            learned=True,
             latency_ms=latency,
             escalated_on_refusal=escalated_on_refusal,
         )
@@ -746,7 +751,7 @@ class Agent:
         if store is None:
             return ""
         try:
-            hits = store.search(question, limit=3)
+            hits = store.search_hybrid(question, limit=3)
         except Exception as e:
             logger.warning("Document retrieval failed: %s", e)
             return ""
@@ -781,7 +786,7 @@ class Agent:
         avg_lp = resp.avg_logprob
         if avg_lp is None:
             return 0.5  # neutral if no logprobs available
-        # Sigmoid mapping: same as confidence_evaluator.compute_logprob_uncertainty
+        # Sigmoid mapping: x = avg_logprob * scale + shift
         x = avg_lp * 2.0 + 3.0
         return float(1.0 / (1.0 + math.exp(-x)))
 

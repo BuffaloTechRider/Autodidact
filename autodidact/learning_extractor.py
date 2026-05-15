@@ -37,6 +37,20 @@ If no procedures found, return empty skills array: {"knowledge": [...], "skills"
 
 _MAX_CONTENT_LENGTH = 500
 
+_DOCUMENT_EXTRACTION_PROMPT = """Extract the key facts and concepts from this document section that would be valuable to remember without re-reading the source.
+
+Rules:
+- "knowledge": each entry is one fact/concept. {"content": "concise statement", "question": "a natural question this answers", "confidence": 0.9}
+- Focus on information someone would want to RECALL later — not trivial details
+- The "question" field is what a user might ask that this fact answers
+- Skip boilerplate, table of contents, and purely structural content
+- Return ONLY valid JSON, nothing else
+
+Example:
+{"knowledge": [{"content": "The API rate limit is 100 requests per minute per user", "question": "What is the API rate limit?", "confidence": 0.95}]}
+
+If nothing worth extracting, return: {"knowledge": []}"""
+
 
 @dataclass
 class ExtractionResult:
@@ -87,6 +101,34 @@ class LearningExtractor:
 
         # Fallback: store raw answer as a single entry.
         return _fallback_result(question, answer)
+
+    def extract_from_document(self, section_text: str, source_file: str) -> ExtractionResult:
+        """Extract knowledge from a document section during ingest.
+
+        Unlike extract() which processes cloud Q&A pairs, this processes raw
+        document text and produces knowledge entries with source='document_ingest'.
+        """
+        if not section_text.strip():
+            return ExtractionResult()
+
+        try:
+            resp = self._client.chat(
+                [
+                    ChatMessage(role="system", content=_DOCUMENT_EXTRACTION_PROMPT),
+                    ChatMessage(role="user", content=section_text[:4000]),
+                ],
+                temperature=0.1,
+                max_tokens=2048,
+            )
+            parsed = _parse_json(resp.content)
+            if parsed is not None:
+                result = _build_document_result(parsed, source_file)
+                if result.knowledge:
+                    return result
+        except Exception as e:
+            logger.warning("LearningExtractor: document extraction failed: %s", e)
+
+        return ExtractionResult()
 
 
 def _parse_json(content: str) -> dict[str, Any] | None:
@@ -161,6 +203,42 @@ def _build_result(parsed: dict[str, Any], question: str) -> ExtractionResult:
             })
 
     return ExtractionResult(knowledge=knowledge, skills=skills)
+
+
+def _build_document_result(parsed: dict[str, Any], source_file: str) -> ExtractionResult:
+    """Build an ExtractionResult from parsed document extraction JSON."""
+    knowledge: list[NewKnowledgeEntry] = []
+
+    raw_knowledge = parsed.get("knowledge", [])
+    if isinstance(raw_knowledge, list):
+        for item in raw_knowledge:
+            if not isinstance(item, dict) or not item.get("content"):
+                continue
+            content = str(item["content"])[:_MAX_CONTENT_LENGTH]
+            confidence = item.get("confidence", 0.8)
+            if not isinstance(confidence, (int, float)):
+                confidence = 0.8
+            confidence = max(0.0, min(1.0, float(confidence)))
+            question = item.get("question")
+            if isinstance(question, str):
+                question = question[:200]
+            else:
+                question = None
+
+            knowledge.append(NewKnowledgeEntry(
+                content=content,
+                question=question,
+                # Uses "cloud_escalation" to satisfy the existing CHECK constraint.
+                # Distinguished from real escalations by metadata.synthesized=True.
+                # v1.5 will add "document_ingest" to the constraint.
+                source="cloud_escalation",
+                confidence=confidence,
+                domain="general",
+                topic="learned",
+                metadata={"source_file": source_file, "synthesized": True},
+            ))
+
+    return ExtractionResult(knowledge=knowledge, skills=[])
 
 
 def _fallback_result(question: str, answer: str) -> ExtractionResult:

@@ -186,7 +186,9 @@ class TestGsaGate:
 
         assert resp.routed_to == "memory"
         gsa_mock.compute.assert_not_called()
-        mock_local_client.chat.assert_not_called()
+        # Memory hits now generate a full response using memory as context
+        # (not return raw stored fact), so local chat IS called.
+        mock_local_client.chat.assert_called_once()
 
     def test_gate_disabled_falls_through_to_old_behavior(
         self, mock_local_client, mock_cloud_client

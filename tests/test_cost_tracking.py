@@ -177,6 +177,7 @@ class TestCumulativeSavings:
         )
         agent._local_client.chat.return_value = ChatResponse(content="I don't have real-time data on that.", model="qwen2.5:7b")
         agent.query("What is quantum entanglement?")
+        agent._last_learn_thread.join(timeout=5)
 
         report = agent.savings()
         assert report.facts_learned >= 1
