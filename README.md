@@ -2,7 +2,7 @@
 
 **A self-evolving AI agent that learns like a new employee.**
 
-Autodidact is an AI agent with a local brain that works like a human, or a new employee. When asked a question or given a task, it thinks first and evaluates whether it can handle the task or answer the question by itself (local brain). If yes, it executes. If not, it escalates — by searching Google or asking a more powerful cloud model — just like how humans work. After the escalation, it learns the new knowledge, skills, or tool usages so next time it won't have to ask similar questions again.
+Autodidact is an AI agent with a local brain that works like a human, or a new employee. When asked a question or given a task, it thinks first and evaluates whether it can handle the task or answer the question by itself (local brain). If yes, it executes. If not, it escalates - by searching Google or asking a more powerful cloud model - just like how humans work. After the escalation, it learns the new knowledge, skills, or tool usages so next time it won't have to ask similar questions again.
 
 On day one, it asks a lot of questions. By week two, it handles most tasks independently. By month three, it's the expert. Every cloud escalation becomes permanent local knowledge. Every interaction makes it smarter. It never forgets what it learned.
 
@@ -15,23 +15,25 @@ Query → Think  (check memory)
       Next similar query → Answer from memory, $0.00
 ```
 
-## Three-command quickstart
+## Four-command quickstart
 
 ```bash
 pip install autodidact             # or: pip install "autodidact[openai,bedrock,pdf]"
 autodidact init                    # zero-friction setup: auto-detects Ollama, pulls models, configures cloud
+autodidact learn <path>            # A brand-new agent has an empty brain. `autodidact learn` seeds it with existing knowledge. <Path> points to the folder having documents or code you want the agent to learn.
 autodidact chat                    # start talking to the agent
 ```
 
 That's it. `autodidact init` walks you through three setup modes:
 
-1. **Local + Cloud** (default) — Ollama local model + cloud API for escalation. Best cost savings.
-2. **Cloud + Cloud** — cheap cloud model (gpt-4o-mini, DeepSeek, etc.) + expensive cloud model. No GPU or Ollama required.
-3. **Local only** — Ollama only. Free. No escalation learning.
+1. **Local + Cloud** (default) - Ollama local model + cloud API for escalation. Best cost savings.
+2. **Cloud + Cloud** - cheap cloud model (gpt-4o-mini, DeepSeek, etc.) + expensive cloud model. No GPU or Ollama required.
+3. **Local only** - Ollama with one local model only. Free. No escalation learning.
+4. **Local + Local** - Ollama with two local models: one small, less powerful but fast, one big, more powerful but slower. Free. Escalation learning for smaller model. 
 
 If Ollama isn't installed, the wizard shows the install command for your platform. If your model isn't pulled, it pulls it automatically. You're in chat within three minutes of `pip install`, regardless of starting point.
 
-## How it works — the human analogy
+## How it works - the human analogy
 
 When you encounter a question, you go through this sequence:
 
@@ -64,7 +66,7 @@ You> How much vacation do I get?
   💰 $0.00 | Confidence: 0.91 | Route: memory
 ```
 
-That's the "magic moment" — the user watching the agent answer from learned knowledge, for free, because it remembered a question it was asked moments ago.
+That's the "magic moment" - the user watching the agent answer from learned knowledge, for free, because it remembered a question it was asked moments ago.
 
 ## Solving the cold start
 
@@ -117,7 +119,7 @@ All of these are in the roadmap. See [ROADMAP.md](ROADMAP.md) and `.kiro/specs/a
 
 - `logprob_uncertainty` is the dominant routing signal (AUROC 0.65-0.83 across 3 model families × 2 datasets).
 - Zero-shot inference-time signals match supervised routing baselines (RouteLLM) at zero per-model training cost.
-- Naive multi-signal fusion hurts — the best single signal beats the mean of all 6 signals.
+- Naive multi-signal fusion hurts - the best single signal beats the mean of all 6 signals.
 - Signal quality correlates with RLHF calibration training across model families (Qwen > Llama).
 
 Full write-up: [`paper/blog-post.md`](paper/blog-post.md). Research findings have their own home at [zero-shot-llm-confidence](https://github.com/paulnnguyen/zero-shot-llm-confidence).
@@ -137,11 +139,11 @@ See [ROADMAP.md](ROADMAP.md) for the timeline.
 ## Tech stack
 
 - **Python 3.10+**
-- **SQLite** (WAL mode) — all state in one portable file
-- **FAISS** — vector retrieval
-- **Pydantic v2** — validation
-- **Typer + Rich** — CLI
-- **Ollama / OpenAI-compatible / AWS Bedrock** — LLM backends
+- **SQLite** (WAL mode) - all state in one portable file
+- **FAISS** - vector retrieval
+- **Pydantic v2** - validation
+- **Typer + Rich** - CLI
+- **Ollama / OpenAI-compatible / AWS Bedrock** - LLM backends
 
 ## Contributing
 
@@ -158,7 +160,7 @@ Good first issues after launch:
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT - see [LICENSE](LICENSE).
 
 ---
 
