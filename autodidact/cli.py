@@ -992,11 +992,12 @@ def _render_smoke_test_error(exc: Exception, config: dict) -> None:
 @app.command()
 def chat(
     config_path: Optional[str] = typer.Option(None, "--config-path"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show debug info: memory similarity, GSA scores, routing signals"),
 ) -> None:
     """Interactive chat with visible thought process."""
     path = Path(config_path) if config_path else None
     agent = _get_agent(path)
-    renderer = ThoughtRenderer()
+    renderer = ThoughtRenderer(verbose=verbose)
 
     console.print("Autodidact chat — type 'quit' or 'exit' to stop.\n", style="bold")
 
@@ -1282,7 +1283,13 @@ def _run_with_spinner(call: Callable[[Callable[[dict], None]], QueryResponse]) -
 
                 if phase == "thinking":
                     if state["phase"] != "thinking":
-                        status.update("[dim]Thinking...")
+                        if source == "local":
+                            status.update(
+                                "[dim]Local brain working...\n"
+                                "  If I fumble this one, type /cloud to ask my sensei"
+                            )
+                        else:
+                            status.update("[dim]Thinking...")
                         state["phase"] = "thinking"
                     state["thinking_buf"].append(text)
 

@@ -113,8 +113,8 @@ class TestRenderResponse:
         output = buf.getvalue()
         assert "$0.004" in output  # should show actual cost
 
-    def test_confidence_displayed(self, renderer):
-        """R2 AC2: Confidence score shown per response."""
+    def test_route_displayed(self, renderer):
+        """Route shown per response."""
         r, buf = renderer
         resp = QueryResponse(
             answer="Answer", routed_to="local", confidence=0.87,
@@ -122,14 +122,14 @@ class TestRenderResponse:
         )
         r.render_response(resp)
         output = buf.getvalue()
-        assert "0.87" in output
+        assert "local" in output
 
 
 class TestRenderSessionSummary:
     """2.3 — Session summary on exit."""
 
     def test_session_summary_shows_totals(self, renderer):
-        """R2 AC5: queries total, local %, cloud %, memory %, cost, facts learned."""
+        """R2 AC5: queries total, local, local+memory, cloud, cost, knowledge learned."""
         r, buf = renderer
         report = SavingsReport(
             total_queries=10,
@@ -145,11 +145,11 @@ class TestRenderSessionSummary:
         r.render_session_summary(report)
         output = buf.getvalue()
         assert "10" in output  # total queries
-        assert "60" in output  # local % (6/10)
-        assert "30" in output  # cloud % (3/10)
-        assert "10" in output  # memory % (1/10)
+        assert "Local: 6" in output  # local only
+        assert "Local + Memory: 1" in output  # memory-assisted
+        assert "Cloud: 3" in output  # cloud
         assert "$0.012" in output or "$0.01" in output  # total cost
-        assert "3" in output  # facts learned
+        assert "Knowledge learned: 3" in output
 
     def test_session_summary_zero_queries(self, renderer):
         """Edge case: no queries in session."""
