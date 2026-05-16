@@ -158,8 +158,8 @@ class TestInitCommand:
         from autodidact.setup_wizard import OllamaStatus
         mock_detect.return_value = OllamaStatus(installed=True, path="/usr/local/bin/ollama")
         config_path = tmp_path / "config.yaml"
-        # mode=4 (local-only), local model default, db path
-        input_text = "4\nqwen2.5:7b\n" + str(tmp_path / "memory.db") + "\n"
+        # mode=5 (local-only), local model default, db path
+        input_text = "5\nqwen2.5:7b\n" + str(tmp_path / "memory.db") + "\n"
 
         result = runner.invoke(
             app, ["init", "--config-path", str(config_path)], input=input_text
@@ -229,8 +229,8 @@ class TestInitCommand:
         from autodidact.setup_wizard import OllamaStatus
         mock_detect.return_value = OllamaStatus(installed=True, path="/usr/local/bin/ollama")
         config_path = tmp_path / "config.yaml"
-        # mode=4 (local-only), defaults
-        input_text = "4\n\n\n"
+        # mode=5 (local-only), defaults
+        input_text = "5\n\n\n"
 
         runner.invoke(app, ["init", "--config-path", str(config_path)], input=input_text)
 
