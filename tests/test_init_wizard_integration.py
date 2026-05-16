@@ -90,7 +90,7 @@ class TestInitModeSelection:
         cfg = tmp_path / "config.yaml"
 
         # Inputs: mode=3, local model default, db default
-        inputs = "4\n\n\n"
+        inputs = "5\n\n\n"
         result = runner.invoke(app, ["init", "--config-path", str(cfg)], input=inputs)
 
         assert result.exit_code == 0, result.output
@@ -116,7 +116,7 @@ class TestOllamaAutoDetection:
         mock_detect.return_value = OllamaStatus(installed=True, path="/usr/local/bin/ollama")
         cfg = tmp_path / "config.yaml"
 
-        inputs = "4\n\n\n"  # local-only mode, defaults
+        inputs = "5\n\n\n"  # local-only mode, defaults
         result = runner.invoke(app, ["init", "--config-path", str(cfg)], input=inputs)
 
         assert result.exit_code == 0
@@ -136,7 +136,7 @@ class TestOllamaAutoDetection:
         cfg = tmp_path / "config.yaml"
 
         # Mode=4 (local-only), then user says 'no' to continuing without ollama.
-        inputs = "4\nn\n"
+        inputs = "5\nn\n"
         result = runner.invoke(app, ["init", "--config-path", str(cfg)], input=inputs)
 
         # Should show the install command.
@@ -159,7 +159,7 @@ class TestOllamaAutoDetection:
         mock_detect.return_value = OllamaStatus(installed=True, path="/usr/local/bin/ollama")
         cfg = tmp_path / "config.yaml"
 
-        inputs = "4\n\n\n"  # local-only mode, defaults
+        inputs = "5\n\n\n"  # local-only mode, defaults
         result = runner.invoke(app, ["init", "--config-path", str(cfg)], input=inputs)
 
         assert result.exit_code == 0
@@ -183,7 +183,7 @@ class TestOllamaAutoDetection:
         mock_detect.return_value = OllamaStatus(installed=True, path="/usr/local/bin/ollama")
         cfg = tmp_path / "config.yaml"
 
-        inputs = "4\n\n\n"  # local-only mode, defaults
+        inputs = "5\n\n\n"  # local-only mode, defaults
         result = runner.invoke(app, ["init", "--config-path", str(cfg)], input=inputs)
 
         assert result.exit_code != 0, "Wizard must fail when pulled model isn't loadable"
@@ -240,7 +240,7 @@ class TestSmokeTest:
         mock_detect.return_value = OllamaStatus(installed=True, path="/usr/local/bin/ollama")
         cfg = tmp_path / "config.yaml"
 
-        inputs = "4\n\n\n"
+        inputs = "5\n\n\n"
         result = runner.invoke(app, ["init", "--config-path", str(cfg)], input=inputs)
 
         assert result.exit_code == 0
