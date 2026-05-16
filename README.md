@@ -24,14 +24,15 @@ autodidact learn <path>            # A brand-new agent has an empty brain. `auto
 autodidact chat                    # start talking to the agent
 ```
 
-That's it. `autodidact init` walks you through three setup modes:
+That's it. `autodidact init` walks you through five setup modes:
 
-1. **Local + Cloud** (default) - Ollama local model + cloud API for escalation. Best cost savings.
-2. **Cloud + Cloud** - cheap cloud model (gpt-4o-mini, DeepSeek, etc.) + expensive cloud model. No GPU or Ollama required.
-3. **Local only** - Ollama with one local model only. Free. No escalation learning.
-4. **Local + Local** - Ollama with two local models: one small, less powerful but fast, one big, more powerful but slower. Free. Escalation learning for smaller model. 
+1. **Local + Cloud** (default) — Ollama local model + cloud API for escalation. Best cost savings.
+2. **Cloud + Cloud** — cheap cloud model + expensive cloud model. No GPU or Ollama required.
+3. **Local + Local** — small Ollama + big Ollama. Fully offline, still learns from escalations. Free.
+4. **Custom local** — any OpenAI-compatible server (llama.cpp, LM Studio, vLLM, LocalAI) + optional cloud.
+5. **Local only** — single Ollama model. Free. No escalation learning.
 
-If Ollama isn't installed, the wizard shows the install command for your platform. If your model isn't pulled, it pulls it automatically. You're in chat within three minutes of `pip install`, regardless of starting point.
+If Ollama isn't installed, the wizard offers to install it (with retry on failure). If your model isn't pulled, it pulls it automatically. If Ollama isn't running, it starts the daemon for you. On corporate networks where Ollama can't be installed, mode 2 or 4 work without it.
 
 ## How it works - the human analogy
 
@@ -80,17 +81,18 @@ autodidact learn --stats              # show what's been ingested
 
 Supports `.md`, `.txt`, `.py`, `.ts`, `.yaml`, `.json`, `.csv`, `.html`, and 15+ other text formats. PDFs via `pip install "autodidact[pdf]"`. Chunks are stored separately from learned Q&A (one is reference material, the other is experience), but both get retrieved and injected into the prompt at query time.
 
-## What's in v1.0
+## What's in v1.0.3
 
-- **Zero-friction setup wizard.** Auto-detects Ollama, pulls models, presets for OpenAI / OpenRouter / DeepSeek / Bedrock.
-- **Three setup modes.** Local+Cloud (default), Cloud+Cloud (no GPU), Local-only (free).
-- **Confidence-based routing.** `logprob_uncertainty` decides when to escalate (validated AUROC 0.65-0.83 across 3 model families × 2 datasets).
-- **Learning from escalations.** Structured knowledge extraction from cloud responses, deduplication on insert, staleness-aware re-verification.
-- **Cold-start fix.** `autodidact learn <path>` ingests docs so the agent has knowledge from day one.
+- **Zero-friction setup wizard.** Auto-detects Ollama, pulls models, starts daemon, retries on failure. Presets for 10 cloud providers.
+- **Five setup modes.** Local+Cloud, Cloud+Cloud, Local+Local, Custom server, Local-only. Works everywhere — GPU, no GPU, corporate network, offline.
+- **Hybrid retrieval.** BM25 keyword search (FTS5) + vector similarity (FAISS), merged via Reciprocal Rank Fusion. Finds documents by exact terms AND meaning.
+- **Document synthesis.** `autodidact learn` doesn't just index — it extracts key facts into memory (background, non-blocking). The agent answers from internalized knowledge, not raw chunks.
+- **Confidence-based routing.** GSA pre-screen + logprob uncertainty + refusal detection. Escalates when uncertain, stays local when confident.
+- **Learning from escalations.** Structured knowledge extraction from cloud responses (background, non-blocking). Deduplication on insert.
 - **Visible learning UX.** `[THINKING]`, `[MEMORY]`, `[LOCAL]`, `[CLOUD]`, `[LEARNED]` tags show what the agent is doing and why.
 - **Cost tracking.** `autodidact savings` reports cumulative cost avoided vs an all-cloud baseline.
 - **Local-first.** All state in one portable SQLite file (`~/.autodidact/memory.db`). Works offline after setup.
-- **Multi-provider.** Ollama local. OpenAI-compatible cloud (OpenRouter, DeepSeek, Together, Anthropic proxies). AWS Bedrock via optional `[bedrock]` extra.
+- **Multi-provider.** Ollama, any OpenAI-compatible server (llama.cpp, LM Studio, vLLM), AWS Bedrock. 10 cloud provider presets.
 
 ## Commands
 
@@ -104,16 +106,16 @@ autodidact memory stats     Knowledge store size + breakdown
 autodidact memory search    Search what the agent has learned
 ```
 
-## What's NOT in v1.0
+## What's NOT in v1.0.x (coming in v1.5 and v2.0)
 
-- No multi-turn conversation sessions across restarts (in-session history only)
-- No skill extraction or skill store (only fact extraction)
-- No autonomous tool discovery
-- No self-verification cycle (stale entries are flagged but not proactively re-checked)
-- No MCP server (coming in v1.1)
-- No TypeScript SDK
+- No topic-based knowledge pages (v1.5 — knowledge compiled into pages, not flat facts)
+- No tool execution (v2.0 — terminal, file ops, ReAct loop)
+- No skill learning from tasks (v2.0 — learns procedures, not just facts)
+- No reranking (v2.0 — cross-encoder on retrieval candidates)
+- No MCP server (v2.0)
+- No OpenAI-compatible proxy mode (v1.5 — `autodidact serve`)
 
-All of these are in the roadmap. See [ROADMAP.md](ROADMAP.md) and `.kiro/specs/autodidact-full/requirements.md` for what ships when.
+All of these are designed and planned. See [`docs/DESIGN-V2.md`](docs/DESIGN-V2.md) for architecture.
 
 ## What we **have** verified empirically:
 
@@ -126,15 +128,14 @@ Full write-up: [`paper/blog-post.md`](paper/blog-post.md). Research findings hav
 
 ## Roadmap
 
-| Phase   | What                                             | Status           |
-|---------|--------------------------------------------------|------------------|
-| v1.0    | Zero-friction self-learning agent                | **Shipping now** |
-| v1.1    | Skill extraction, self-verification, MCP server  | Planned          |
-| v2.0    | Hive — agents teaching each other                | Planned          |
-| v3.0    | Hierarchical agent networks                      | Vision           |
-| Phase 4 | LoRA consolidation (episodic → parametric)       | Research         |
+| Version | What | Status |
+|---------|------|--------|
+| v1.0.3  | Hybrid retrieval, document synthesis, 5 setup modes | **Current** |
+| v1.5    | Topic pages, USearch, parallel retrieval, `autodidact serve` proxy | In progress |
+| v2.0    | Tool execution, skill learning, tiered routing, reranking, curator | Designed |
+| v3.0    | Agent network — agents teaching each other | Planned |
 
-See [ROADMAP.md](ROADMAP.md) for the timeline.
+See [`docs/DESIGN-V2.md`](docs/DESIGN-V2.md) for the full architecture.
 
 ## Tech stack
 
@@ -149,14 +150,14 @@ See [ROADMAP.md](ROADMAP.md) for the timeline.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-Good first issues after launch:
+Good first issues:
 
-- Multi-turn session persistence across restarts
-- Skill extraction (extract procedures from cloud, not just facts)
+- `autodidact serve` — OpenAI-compatible proxy (drop-in for Cursor, Aider, any tool)
 - MCP server for Claude Desktop / Cursor / Gemini CLI
-- Self-verification cycle
-- Additional benchmarks (TriviaQA, LongMemEval)
-- TypeScript SDK
+- PDF document ingestion (`unstructured` parser)
+- Topic-based knowledge pages (v1.5 core feature)
+- Skill extraction from cloud responses (procedures, not just facts)
+- `autodidact status` dashboard (learning curve + cost savings visualization)
 
 ## License
 
