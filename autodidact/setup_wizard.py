@@ -136,24 +136,30 @@ def get_ollama_install_command() -> str:
         return "Download from https://ollama.com/download/windows"
 
 
-def install_ollama() -> bool:
+def install_ollama(retries: int = 2) -> bool:
     """Run the Ollama installer for the current platform.
 
+    Retries on failure (transient 403s from Ollama's CDN are common).
     Returns True on success, False otherwise. Does NOT confirm with the user
     — the caller is responsible for getting consent before invoking this.
 
     Windows is not supported; returns False without attempting anything.
     """
-    if sys.platform == "darwin" or sys.platform.startswith("linux"):
+    if sys.platform not in ("darwin",) and not sys.platform.startswith("linux"):
+        return False
+
+    for attempt in range(retries):
         try:
-            # Run via shell so the curl-pipe-sh idiom works.
             result = subprocess.run(
-                ["sh", "-c", "curl -fsSL https://ollama.com/install.sh | sh"],
+                ["bash", "-c", "set -o pipefail; curl -fsSL https://ollama.com/install.sh | sh"],
                 timeout=600,
             )
-            return result.returncode == 0
+            if result.returncode == 0:
+                return True
         except (OSError, subprocess.TimeoutExpired):
-            return False
+            pass
+        if attempt < retries - 1:
+            time.sleep(3)
     return False
 
 

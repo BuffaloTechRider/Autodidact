@@ -267,10 +267,13 @@ def init(
 
 
 def _offer_to_install_ollama() -> bool:
-    """Show the install command and ask the user to confirm. Returns True if installed.
+    """Install Ollama: auto-install → retry → manual with wait. Returns True if installed.
 
-    On Windows we cannot auto-install in v1.0; print manual instructions and
-    return False so the wizard exits cleanly.
+    Flow:
+    1. Try automatic install (with retry on transient failures)
+    2. If auto fails → show manual command, wait for user to confirm done
+    3. Re-detect Ollama on PATH
+    4. If installed and not running → start daemon automatically
     """
     import sys
 
@@ -279,32 +282,61 @@ def _offer_to_install_ollama() -> bool:
 
     if sys.platform == "win32":
         console.print(
-            "  v1.0 doesn't auto-install Ollama on Windows. "
-            "Download the installer from [cyan]https://ollama.com/download/windows[/cyan], "
-            "run it, then re-run [cyan]autodidact init[/cyan]."
+            "  Download the installer from [cyan]https://ollama.com/download/windows[/cyan], "
+            "run it, then press Enter to continue."
         )
-        return False
+        typer.prompt("Press Enter when Ollama is installed", default="", show_default=False)
+        return detect_ollama().installed
 
     cmd = get_ollama_install_command()
     console.print(f"  Install command: [cyan]{cmd}[/cyan]")
+
+    if typer.confirm("Install Ollama automatically?", default=True):
+        console.print("Installing Ollama...", style="dim")
+        if install_ollama():
+            console.print("✓ Ollama installed.", style="green")
+            return _ensure_ollama_running()
+
+    # Auto-install failed or user declined — manual install flow with retry loop.
+    console.print()
     console.print(
-        "  This downloads and runs the official installer from [cyan]ollama.com[/cyan].",
-        style="dim",
+        "[yellow]Please install Ollama manually:[/yellow]\n"
+        f"  [cyan]{cmd}[/cyan]\n"
     )
 
-    if not typer.confirm("Install Ollama now?", default=True):
-        return False
+    for _ in range(3):
+        typer.prompt("Press Enter when done", default="", show_default=False)
+        if detect_ollama().installed:
+            console.print("✓ Ollama detected.", style="green")
+            return _ensure_ollama_running()
+        console.print(
+            "[yellow]Ollama still not found.[/yellow] "
+            "Make sure the install completed and Ollama is on your PATH.\n"
+            "  (You may need to open a new terminal for PATH changes to take effect.)\n"
+            f"  Install command: [cyan]{cmd}[/cyan]\n"
+        )
+        if not typer.confirm("Try again?", default=True):
+            break
 
-    console.print("Installing Ollama...", style="dim")
-    if install_ollama():
-        console.print("✓ Ollama installed.", style="green")
-        return True
-
-    console.print(
-        "[red]Install failed.[/red] You can run the command manually:\n"
-        f"  [cyan]{cmd}[/cyan]"
-    )
+    console.print("Aborted. Re-run [cyan]autodidact init[/cyan] after installing Ollama.")
     return False
+
+
+def _ensure_ollama_running() -> bool:
+    """If Ollama is installed but daemon isn't running, start it. Returns True if ready."""
+    if is_ollama_running():
+        return True
+    console.print("Starting Ollama daemon...", style="dim")
+    if start_ollama_daemon(wait_timeout_s=20.0):
+        console.print("✓ Ollama daemon is running.", style="green")
+        return True
+    console.print(
+        "[yellow]Ollama installed but daemon didn't start.[/yellow]\n"
+        "  Start it manually: [cyan]ollama serve[/cyan] (in another terminal)\n"
+        "  Then press Enter to continue."
+    )
+    typer.prompt("Press Enter when Ollama is running", default="", show_default=False)
+    return is_ollama_running()
 
 
 def _offer_to_start_ollama() -> bool:
@@ -342,30 +374,19 @@ def _offer_to_start_ollama() -> bool:
 
 def _init_with_ollama(mode: str) -> dict:
 
-    # Detect Ollama.
+    # Detect Ollama — install if missing, start daemon if not running.
     status = detect_ollama()
     if not status.installed:
         if not _offer_to_install_ollama():
             console.print(
-                "Aborted. Install Ollama and re-run [cyan]autodidact init[/cyan].",
+                "Aborted. Re-run [cyan]autodidact init[/cyan] after installing Ollama.",
                 style="yellow",
             )
             raise typer.Exit(0)
-        # Re-detect after install.
-        status = detect_ollama()
-        if not status.installed:
+    elif not is_ollama_running():
+        if not _ensure_ollama_running():
             console.print(
-                "[red]Install ran but Ollama still isn't on PATH.[/red] "
-                "You may need to restart your shell, then re-run "
-                "[cyan]autodidact init[/cyan].",
-            )
-            raise typer.Exit(1)
-
-    # Daemon needs to be running for pulls and embedding/chat calls.
-    if not is_ollama_running():
-        if not _offer_to_start_ollama():
-            console.print(
-                "Aborted. Start the Ollama daemon and re-run [cyan]autodidact init[/cyan].",
+                "Aborted. Start Ollama and re-run [cyan]autodidact init[/cyan].",
                 style="yellow",
             )
             raise typer.Exit(0)
@@ -427,16 +448,34 @@ def _init_with_ollama(mode: str) -> dict:
 def _pull_and_verify(model_name: str, *, label: str) -> None:
     """Pull a model if needed, then verify Ollama can actually serve it.
 
-    Catches the 'cloud-only tag' case where pull returns success but the
-    model never appears in ollama list. If verify fails, prints a helpful
-    error and raises typer.Exit so the wizard stops before writing a
-    broken config.
+    Distinguishes three failure modes:
+    1. Pull failed (network/TLS error) → suggest retry or different network
+    2. Pull succeeded but model is cloud-only → suggest a different tag
+    3. Pull succeeded and model loads → success
     """
     if is_model_available(model_name):
         return
 
     console.print(f"{label} [cyan]{model_name}[/cyan] not pulled yet. Downloading...", style="dim")
-    pull_ollama_model(model_name)
+    pull_ok = pull_ollama_model(model_name)
+
+    if not pull_ok:
+        console.print(
+            f"\n[red]{label} [cyan]{model_name}[/cyan] download failed.[/red]"
+        )
+        console.print(
+            "  Likely cause: network issue (TLS handshake failure, proxy, or firewall).\n"
+            "  Options:\n"
+            f"    1. [cyan]ollama pull {model_name}[/cyan] manually to see the full error\n"
+            "    2. Check your internet connection / VPN / proxy settings\n"
+            "    3. Try on a different network (e.g. personal hotspot)\n"
+            f"    4. Once pulled, re-run [cyan]autodidact init[/cyan]\n"
+            "\n"
+            "  [bold]On a corporate network?[/bold] Try [cyan]autodidact init[/cyan] and pick\n"
+            "  mode 2 (Cloud + Cloud) — no Ollama needed, just an API key.",
+            style="dim",
+        )
+        raise typer.Exit(1)
 
     if not verify_model_loadable(model_name):
         console.print(
@@ -444,10 +483,7 @@ def _pull_and_verify(model_name: str, *, label: str) -> None:
         )
         console.print(
             "  Likely cause: this tag points to cloud-only inference "
-            "(e.g. qwen3.5:9b, *:cloud). Pick a tag with real weights.",
-            style="dim",
-        )
-        console.print(
+            "(e.g. qwen3.5:9b, *:cloud). Pick a tag with real weights.\n"
             f"  Try: [cyan]ollama run {model_name}[/cyan] to confirm, "
             f"then re-run [cyan]autodidact init[/cyan] with a different model.",
             style="dim",
