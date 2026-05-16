@@ -239,6 +239,8 @@ def init(
 
     if mode in ("local_cloud", "local_only", "local_local"):
         config = _init_with_ollama(mode)
+    elif mode == "custom_server":
+        config = _init_custom_server()
     else:
         config = _init_cloud_to_cloud()
 
@@ -476,6 +478,62 @@ def _init_cloud_to_cloud() -> dict:
     )
 
 
+def _init_custom_server() -> dict:
+    """Run the custom local server init flow. Any OpenAI-compatible server.
+
+    Works with: llama.cpp server, LM Studio, vLLM, text-generation-inference,
+    LocalAI, or any server that speaks the OpenAI chat completions API.
+    """
+    console.print("\n[bold]Custom local server[/bold]")
+    console.print("  Any server that speaks the OpenAI chat completions API.")
+    console.print()
+    console.print("  Popular options:", style="dim")
+    console.print("    • [cyan]LM Studio[/cyan]     — GUI app, download from lmstudio.ai", style="dim")
+    console.print("    • [cyan]llama.cpp[/cyan]     — CLI: brew install llama.cpp && llama-server -m model.gguf", style="dim")
+    console.print("    • [cyan]vLLM[/cyan]          — pip install vllm && vllm serve model-name", style="dim")
+    console.print("    • [cyan]LocalAI[/cyan]       — docker run -p 8080:8080 localai/localai", style="dim")
+    console.print()
+
+    base_url = typer.prompt(
+        "  Server URL",
+        default="http://localhost:8080/v1",
+    ).strip().rstrip("/")
+
+    model = typer.prompt(
+        "  Model name (as the server knows it)",
+        default="default",
+    ).strip()
+
+    console.print()
+    has_cloud = typer.confirm("Add a cloud model for escalation (learning)?", default=True)
+
+    if has_cloud:
+        console.print("\n[bold]Cloud model[/bold] (escalation target):")
+        cloud_cfg = _prompt_single_cloud_provider(slot="cloud")
+        return build_config(
+            mode="cloud_cloud",
+            cheap_cloud_provider="openai",
+            cheap_cloud_model=model,
+            cheap_cloud_api_key=None,
+            cheap_cloud_base_url=base_url,
+            expensive_cloud_provider=cloud_cfg["provider"],
+            expensive_cloud_model=cloud_cfg["model"],
+            expensive_cloud_api_key=cloud_cfg["api_key"],
+            expensive_cloud_base_url=cloud_cfg.get("base_url"),
+            expensive_cloud_bedrock=cloud_cfg.get("bedrock"),
+        )
+
+    # No cloud — local only via custom server.
+    return {
+        "local": {
+            "provider": "openai",
+            "model": model,
+            "base_url": base_url,
+        },
+        "routing": {"confidence_threshold": 0.7},
+    }
+
+
 def _questionary_available() -> bool:
     """True if questionary can be imported AND stdin is a TTY.
 
@@ -611,11 +669,12 @@ def _pick_cloud_model(preset: dict, *, slot: str) -> str:
 
 
 def _pick_setup_mode() -> str:
-    """Show the 4 setup modes as a list; return the canonical key."""
+    """Show the 5 setup modes as a list; return the canonical key."""
     labels = [
         "Local + Cloud   — Ollama local + cloud for escalation (best savings)",
         "Cloud + Cloud   — cheap cloud + expensive cloud (no GPU needed)",
         "Local + Local   — small Ollama + big Ollama (free, fully offline, still learns)",
+        "Custom local    — any OpenAI-compatible local server (llama.cpp, LM Studio, vLLM)",
         "Local only      — Ollama only, no cloud (free, no learning escalations)",
     ]
     chosen = _pick_from_list("Pick a setup mode", labels, labels[0])
@@ -625,6 +684,8 @@ def _pick_setup_mode() -> str:
         return "cloud_cloud"
     if "Local + Local" in chosen:
         return "local_local"
+    if "Custom local" in chosen:
+        return "custom_server"
     return "local_only"
 
 
