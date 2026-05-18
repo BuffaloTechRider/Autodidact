@@ -282,11 +282,9 @@ class Agent:
                 })
 
                 if self._local_client is not None:
-                    # Generate a full answer using memory as context.
+                    # Generate answer using memory as context (streaming).
                     messages, ctx_sources = self._build_messages(question, context, memory_hits)
-                    local_resp = self._local_client.chat(
-                        messages, max_tokens=4096, temperature=0.0,
-                    )
+                    local_resp = self._call_local(messages, _emit)
                     answer = local_resp.content
 
                     latency = _elapsed_ms(started)
