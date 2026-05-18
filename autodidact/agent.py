@@ -471,12 +471,16 @@ class Agent:
 
         total = row["total"]
         total_cost = row["total_cost"]
-        # Estimate: every query would cost at least $0.003 if sent to cloud.
-        all_cloud_est = total * 0.003
-        # For cloud queries, use actual cost if it's higher than the minimum.
+        # Estimate what all queries would have cost if sent to cloud.
+        # Use the max actual cloud cost as the per-query estimate for local/memory queries.
+        max_cloud_row = self._conn.execute(
+            "SELECT COALESCE(MAX(cost), 0.015) AS max_cost FROM query_log WHERE cost > 0"
+        ).fetchone()
+        max_cloud_cost = max_cloud_row["max_cost"] if max_cloud_row["max_cost"] else 0.015
         cloud_actual_row = self._conn.execute(
-            "SELECT COALESCE(SUM(CASE WHEN cost > 0.003 THEN cost ELSE 0.003 END), 0.0) AS est "
-            "FROM query_log"
+            "SELECT COALESCE(SUM(CASE WHEN cost > 0 THEN cost ELSE ? END), 0.0) AS est "
+            "FROM query_log",
+            (max_cloud_cost,),
         ).fetchone()
         all_cloud_est = cloud_actual_row["est"] if total > 0 else 0.0
 
@@ -852,7 +856,14 @@ class Agent:
         s.total_queries += 1
         s.total_cost_usd += cost
         # Estimate what this query would have cost if sent to cloud.
-        s.estimated_all_cloud_cost_usd += max(cost, 0.003)  # minimum $0.003 per query
+        # Use the max cloud cost seen so far (local/memory queries are typically
+        # similar complexity to the cloud calls that taught the system).
+        if cost > 0:
+            s.estimated_all_cloud_cost_usd += cost
+            s._max_cloud_cost = max(getattr(s, "_max_cloud_cost", 0.0), cost)
+        else:
+            cloud_est = getattr(s, "_max_cloud_cost", 0.0) or 0.015
+            s.estimated_all_cloud_cost_usd += cloud_est
         if routed_to == "local":
             s.local_queries += 1
         elif routed_to == "cloud":
