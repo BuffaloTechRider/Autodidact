@@ -1021,6 +1021,12 @@ _NON_ANSWER_MARKERS = (
     "i do not have specific",
     "i cannot provide accurate",
     "i can't provide accurate",
+    "i cannot tell you",
+    "i can't tell you",
+    "i cannot answer",
+    "i can't answer",
+    "i don't have access to",
+    "i do not have access to",
     "i'd recommend checking",
     "i would recommend checking",
     "rather than risk giving you inaccurate",
@@ -1029,6 +1035,9 @@ _NON_ANSWER_MARKERS = (
     "my training data doesn't include",
     "beyond my knowledge cutoff",
     "i'm not able to confirm",
+    "the provided context does not contain",
+    "not available in the provided context",
+    "no information about this in the context",
 )
 
 

@@ -743,7 +743,7 @@ def _pick_cloud_provider() -> str:
     )
     providers = list_cloud_providers()
     choices = [_PROVIDER_LABELS.get(p, p) for p in providers] + [_OTHER_CHOICE]
-    default_label = _PROVIDER_LABELS.get("bedrock", "bedrock")
+    default_label = _PROVIDER_LABELS.get("google", "google")
     chosen = _pick_from_list("Cloud provider", choices, default_label)
     if chosen == _OTHER_CHOICE:
         return typer.prompt("Provider name").strip().lower()
@@ -1110,8 +1110,14 @@ def chat(
         resp = _query_with_spinner(agent, line.strip())
         renderer.render_response(resp)
 
-    # Session summary on exit.
-    report = agent.savings()
+    # Session summary on exit (current session only, not all-time DB stats).
+    report = getattr(agent, "_session_stats", None)
+    if not isinstance(report, SavingsReport):
+        report = agent.savings()
+    else:
+        all_cloud = report.estimated_all_cloud_cost_usd or 0.0
+        report.saved_usd = all_cloud - report.total_cost_usd
+        report.saved_pct = (report.saved_usd / all_cloud * 100) if all_cloud > 0 else 0.0
     renderer.render_session_summary(report)
 
 

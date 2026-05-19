@@ -707,7 +707,7 @@ class LLMClient:
     def _openai_transient_exceptions(self) -> tuple[type, ...]:
         try:
             import openai  # type: ignore
-            return (openai.APIConnectionError, openai.APITimeoutError)
+            return (openai.APIConnectionError, openai.APITimeoutError, openai.RateLimitError)
         except ImportError:
             return ()
 

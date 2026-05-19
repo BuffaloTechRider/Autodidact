@@ -293,7 +293,7 @@ _CLOUD_PRESETS: dict[str, dict] = {
             "gemini-2.0-flash",
         ],
         "default_cheap": "gemini-2.5-flash",
-        "default_expensive": "gemini-2.5-pro",
+        "default_expensive": "gemini-2.5-flash",
         "embedding_model": None,
     },
     "openrouter": {
@@ -429,8 +429,10 @@ def get_cloud_preset(provider: str) -> dict:
 
 
 def list_cloud_providers() -> list[str]:
-    """List available cloud provider presets."""
-    return list(_CLOUD_PRESETS.keys())
+    """List available cloud provider presets, ordered for the wizard UI."""
+    priority = ["google", "bedrock"]
+    rest = [k for k in _CLOUD_PRESETS if k not in priority]
+    return priority + rest
 
 
 # ── Bedrock model discovery ──────────────────────────────────────

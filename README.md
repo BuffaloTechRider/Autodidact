@@ -138,12 +138,17 @@ autodidact memory search    Search what the agent has learned
 
 ## What's NOT in v1.0.x (coming in v1.5 and v2.0)
 
+- No conversational query rewriting (v1.5 — rewrite follow-up queries into self-contained searches using conversation history)
+- No markdown-aware chunking (v1.5 — respect tables, code fences, headings as atomic units; tree-sitter markdown grammar)
+- No parent-child retrieval (v1.5 — index small chunks, return parent section on hit)
+- No contextual chunking (v1.5 — prepend LLM-generated context to chunks before embedding, bridges NL↔code gap)
 - No topic-based knowledge pages (v1.5 — knowledge compiled into pages, not flat facts)
+- No OpenAI-compatible proxy mode (v1.5 — `autodidact serve`)
+- No agentic retrieval (v2.0 — model reads files on demand via tools, no static chunking needed)
 - No tool execution (v2.0 — terminal, file ops, ReAct loop)
 - No skill learning from tasks (v2.0 — learns procedures, not just facts)
 - No reranking (v2.0 — cross-encoder on retrieval candidates)
 - No MCP server (v2.0)
-- No OpenAI-compatible proxy mode (v1.5 — `autodidact serve`)
 
 All of these are designed and planned.
 
@@ -161,8 +166,8 @@ Full write-up: [`paper`](https://arxiv.org/html/2605.02241v1). Research findings
 | Version | What | Status |
 |---------|------|--------|
 | v1.0.4  | AST-aware chunking, Google AI Studio provider, memory transfer, non-answer filtering | **Current** |
-| v1.5    | Topic pages, USearch, parallel retrieval, `autodidact serve` proxy | In progress |
-| v2.0    | Tool execution, skill learning, tiered routing, reranking, curator | Designed |
+| v1.5    | Query rewriting, markdown-aware chunking, parent-child retrieval, contextual chunking, topic pages, `autodidact serve` proxy | Planned |
+| v2.0    | Agentic retrieval (readFile), tool execution, skill learning, tiered routing, reranking, MCP server | Designed |
 | v3.0    | Agent network — agents teaching each other | Planned |
 
 ## Tech stack
