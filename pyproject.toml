@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "autodidact"
-version = "1.0.4"
+version = "1.0.5"
 description = "Self-learning AI agent that gets smarter over time. Routes between local and cloud models by confidence; learns from every escalation."
 readme = "README.md"
 license = "MIT"
