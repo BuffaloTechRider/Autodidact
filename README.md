@@ -15,6 +15,8 @@ Query → Think  (check memory)
       Next similar query → Answer from memory, $0.00
 ```
 
+https://github.com/user-attachments/assets/fe196a13-4046-4be2-82db-74445109cbca
+
 ## Four-command quickstart
 
 ```bash
