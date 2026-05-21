@@ -1,21 +1,13 @@
-# Autodidact
+# 🧠 Autodidact (v1.0.x)
+** A local-first, self-evolving AI agent framework that slashes cloud API costs by distilling knowledge onto the edge.
 
-**A self-evolving AI agent that learns like a new employee.**
-
-Autodidact is an AI agent with a local brain that works like a human, or a new employee. When asked a question or given a task, it thinks first and evaluates whether it can handle the task or answer the question by itself (local brain). If yes, it executes. If not, it escalates - by searching Google or asking a more powerful cloud model - just like how humans work. After the escalation, it learns the new knowledge, skills, or tool usages so next time it won't have to ask similar questions again.
-
-On day one, it asks a lot of questions. By week two, it handles most tasks independently. By month three, it's the expert. Every cloud escalation becomes permanent local knowledge. Every interaction makes it smarter. It never forgets what it learned.
-
-```
-Query → Think  (check memory)
-      → Try    (local model answers if confident)
-      → Ask    (escalate to cloud when uncertain)
-      → Learn  (store the answer for next time)
-      ──────────────────────────────────────────
-      Next similar query → Answer from memory, $0.00
-```
+Autodidact is an AI agent with a local brain that works like a human. When asked a question or given a task, it thinks first and evaluates whether the local brain can handle it. If yes, it executes. If not, it escalates - by searching Google or asking someone smarter (a more powerful cloud model) - just like how humans work. After the escalation, it learns the new knowledge, skills, or tool usages so next time it won't have to ask similar questions again.
 
 https://github.com/user-attachments/assets/fe196a13-4046-4be2-82db-74445109cbca
+
+## 📊 Core Benchmarks (v1.x Dev Run)
+* **67%** of repetitive codebase/doc queries successfully intercepted by local memory or rag.
+* **~70% cost saved** over just 30 standard development queries.
 
 ## Four-command quickstart
 
@@ -49,9 +41,20 @@ When you encounter a question, you go through this sequence:
 5. **Remember what you learned** → Store it
 6. **Next time, start from step 1** → You're smarter now
 
-A new employee does this every day. The more tasks they do, the more knowledgeable they become, the fewer questions they ask. Eventually, they're the person others come to.
+Humans do this every day. The more tasks we do, the more knowledgeable we become, the fewer questions we ask. 
 
 **Autodidact makes AI work the same way.**
+
+On day one, it asks a lot of questions. By week two, it handles most tasks independently. By month three, it's the expert. Every cloud escalation becomes permanent local knowledge. Every interaction makes it smarter. It never forgets what it learned.
+
+```
+Query → Think  (check memory)
+      → Try    (local model answers if confident)
+      → Ask    (escalate to cloud when uncertain)
+      → Learn  (store the answer for next time)
+      ──────────────────────────────────────────
+      Next similar query → Answer from memory, $0.00
+```
 
 ### Solving the cold start
 
@@ -66,6 +69,8 @@ autodidact learn --stats              # show what's been ingested
 Supports `.md`, `.txt`, `.py`, `.ts`, `.js`, `.yaml`, `.json`, `.csv`, `.html`, and 15+ other text formats. Code files are split on function/class boundaries via tree-sitter (`pip install "autodidact[code]"`). PDFs via `pip install "autodidact[pdf]"`. Chunks are stored separately from learned Q&A (one is reference material, the other is experience), but both get retrieved and injected into the prompt at query time.
 
 ### See it learn
+
+https://github.com/user-attachments/assets/fe196a13-4046-4be2-82db-74445109cbca
 
 Feed it your docs:
 
@@ -110,7 +115,6 @@ you> Staging is down again, connection errors
 Same knowledge. Zero cost. The answer is *better* than raw docs because it leads with the most likely cause (learned from the cloud's reasoning, not just document text).
 
 **That's the loop.** Every escalation makes the agent smarter. Every smart answer saves money. Over time, cloud calls approach zero.
-
 
 ## What's in v1.0.x
 
@@ -167,7 +171,7 @@ Full write-up: [`paper`](https://arxiv.org/html/2605.02241v1). Research findings
 
 | Version | What | Status |
 |---------|------|--------|
-| v1.0.4  | AST-aware chunking, Google AI Studio provider, memory transfer, non-answer filtering | **Current** |
+| v1.0.6  | AST-aware chunking, Google AI Studio provider, memory transfer, non-answer filtering | **Current** |
 | v1.5    | Query rewriting, markdown-aware chunking, parent-child retrieval, contextual chunking, topic pages, `autodidact serve` proxy | Planned |
 | v2.0    | Agentic retrieval (readFile), tool execution, skill learning, tiered routing, reranking, MCP server | Designed |
 | v3.0    | Agent network — agents teaching each other | Planned |
@@ -188,7 +192,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Good first issues:
 
-- `autodidact serve` — OpenAI-compatible proxy (drop-in for Cursor, Aider, any tool)
+- `autodidact serve` - OpenAI-compatible proxy (drop-in for Cursor, Aider, any tool)
 - MCP server for Claude Desktop / Cursor / Gemini CLI
 - PDF document ingestion (`unstructured` parser)
 - Topic-based knowledge pages (v1.5 core feature)
