@@ -23,6 +23,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional
+import pymupdf
+from docx import Document
 
 import numpy as np
 
@@ -45,6 +47,8 @@ _TEXT_EXTENSIONS: frozenset[str] = frozenset({
     ".c", ".cpp", ".h", ".hpp",
     ".rb", ".php", ".swift",
 })
+
+_SUPPORTED_EXTENSIONS = _TEXT_EXTENSIONS | {".pdf", ".docx", ".doc"}
 
 # Chars-per-token approximation (OpenAI's cl100k_base rule of thumb).
 # We chunk by characters for the fast path; only the cap-enforcement step
@@ -596,7 +600,7 @@ def walk_files(path: Path, *, max_file_bytes: int = _DEFAULT_MAX_FILE_BYTES) -> 
 
 def _is_supported(file_path: Path) -> bool:
     """Whether the file's extension is a supported text format."""
-    return file_path.suffix.lower() in _TEXT_EXTENSIONS
+    return file_path.suffix.lower() in _SUPPORTED_EXTENSIONS
 
 
 def _load_gitignore(root: Path) -> list[str]:
@@ -662,6 +666,37 @@ class DocumentStore:
 
     # ── Public API ────────────────────────────────────────────────
 
+    def __get_file_type(self, file_path: Path) -> str:
+        """Determine the file type based on its extension."""
+        ext = file_path.suffix.lower()
+        if ext in _TEXT_EXTENSIONS:
+            return "text"
+        elif ext == ".pdf":
+            return "pdf"
+        elif ext in {".docx", ".doc"}:
+            return "word"
+        return "data"
+
+    def __read_text_from_file(self, file_path: Path) -> str:
+        """Read a text file, returning None on failure."""
+        try:
+            ext = self.__get_file_type(file_path)
+            if ext == "pdf":
+                doc = pymupdf.open(file_path)
+                text = ""
+                for page in doc:
+                    text += page.get_text()
+                return text
+            elif ext == "word":
+                doc = Document(file_path)
+                text = "\n".join(p.text for p in doc.paragraphs)
+                return text
+            else:
+                return file_path.read_text(encoding="utf-8", errors="replace")
+        except OSError as e:
+            logger.warning("Skipping %s: %s", file_path, e)
+            raise OSError(f"Failed to read {file_path}: {e}")
+
     def ingest(
         self,
         path: Path | str,
@@ -683,7 +718,7 @@ class DocumentStore:
 
         for file_path in walk_files(path):
             try:
-                text = file_path.read_text(encoding="utf-8", errors="replace")
+                text = self.__read_text_from_file(file_path)
             except OSError as e:
                 logger.warning("Skipping %s: %s", file_path, e)
                 files_skipped += 1
