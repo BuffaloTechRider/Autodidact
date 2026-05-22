@@ -119,11 +119,9 @@ class TestOptionalExtras:
         names = {_package_name(d) for d in extras["bedrock"]}
         assert "boto3" in names, "bedrock extra must include boto3"
 
-    def test_has_openai_extra(self, pyproject):
-        extras = pyproject["project"].get("optional-dependencies", {})
-        assert "openai" in extras
-        names = {_package_name(d) for d in extras["openai"]}
-        assert "openai" in names, "openai extra must include the openai package"
+    def test_openai_is_core_dependency(self, pyproject):
+        deps = {_package_name(d) for d in pyproject["project"].get("dependencies", [])}
+        assert "openai" in deps, "openai must be a core dependency (used by Google, OpenRouter, etc.)"
 
     def test_has_pdf_extra(self, pyproject):
         """[pdf] extra for document ingestion (R9 AC4)."""

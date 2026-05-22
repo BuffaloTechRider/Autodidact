@@ -42,6 +42,7 @@ dependencies = [
     "tokenizers>=0.20",
     "questionary>=2.0",
     "psutil>=5.9",
+    "openai>=1.0",
 ]
 
 [project.urls]
@@ -50,9 +51,6 @@ Repository = "https://github.com/BuffaloTechRider/Autodidact"
 Issues = "https://github.com/BuffaloTechRider/Autodidact/issues"
 
 [project.optional-dependencies]
-openai = [
-    "openai>=1.0",
-]
 bedrock = [
     "boto3>=1.28",
 ]
