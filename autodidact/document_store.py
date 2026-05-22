@@ -23,8 +23,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional
-import pymupdf
-from docx import Document
 
 import numpy as np
 
@@ -48,7 +46,7 @@ _TEXT_EXTENSIONS: frozenset[str] = frozenset({
     ".rb", ".php", ".swift",
 })
 
-_SUPPORTED_EXTENSIONS = _TEXT_EXTENSIONS | {".pdf", ".docx", ".doc"}
+_SUPPORTED_EXTENSIONS = _TEXT_EXTENSIONS | {".pdf", ".docx"}
 
 # Chars-per-token approximation (OpenAI's cl100k_base rule of thumb).
 # We chunk by characters for the fast path; only the cap-enforcement step
@@ -666,31 +664,39 @@ class DocumentStore:
 
     # ── Public API ────────────────────────────────────────────────
 
-    def __get_file_type(self, file_path: Path) -> str:
+    def _get_file_type(self, file_path: Path) -> str:
         """Determine the file type based on its extension."""
         ext = file_path.suffix.lower()
         if ext in _TEXT_EXTENSIONS:
             return "text"
         elif ext == ".pdf":
             return "pdf"
-        elif ext in {".docx", ".doc"}:
-            return "word"
+        elif ext in {".docx"}:
+            return "docx"
         return "data"
 
-    def __read_text_from_file(self, file_path: Path) -> str:
-        """Read a text file, returning None on failure."""
+    def _read_text_from_file(self, file_path: Path) -> str:
+        """Read a text file, returning OSError|ImportError on failure."""
         try:
-            ext = self.__get_file_type(file_path)
+            ext = self._get_file_type(file_path)
             if ext == "pdf":
-                doc = pymupdf.open(file_path)
-                text = ""
-                for page in doc:
-                    text += page.get_text()
-                return text
-            elif ext == "word":
-                doc = Document(file_path)
-                text = "\n".join(p.text for p in doc.paragraphs)
-                return text
+                try:
+                    import pymupdf
+                    doc = pymupdf.open(file_path)
+                    text = ""
+                    for page in doc:
+                        text += page.get_text()
+                    return text
+                except ImportError:
+                    raise ImportError("pymupdf not available for PDF reading", "Install with pip install pymupdf")
+            elif ext == "docx":
+                try:
+                    from docx import Document
+                    doc = Document(file_path)
+                    text = "\n".join(p.text for p in doc.paragraphs)
+                    return text
+                except ImportError:
+                    raise ImportError("python-docx not available for Word document reading", "Install with pip install python-docx")
             else:
                 return file_path.read_text(encoding="utf-8", errors="replace")
         except OSError as e:
@@ -718,7 +724,7 @@ class DocumentStore:
 
         for file_path in walk_files(path):
             try:
-                text = self.__read_text_from_file(file_path)
+                text = self._read_text_from_file(file_path)
             except OSError as e:
                 logger.warning("Skipping %s: %s", file_path, e)
                 files_skipped += 1
