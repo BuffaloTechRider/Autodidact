@@ -57,6 +57,11 @@ bedrock = [
 pdf = [
     "pymupdf>=1.23",
 ]
+
+docx = [
+    "python-docx>=1.0",
+]
+
 code = [
     "tree-sitter>=0.23",
     "tree-sitter-python>=0.23",

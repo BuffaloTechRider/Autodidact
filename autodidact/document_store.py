@@ -46,6 +46,8 @@ _TEXT_EXTENSIONS: frozenset[str] = frozenset({
     ".rb", ".php", ".swift",
 })
 
+_SUPPORTED_EXTENSIONS = _TEXT_EXTENSIONS | {".pdf", ".docx"}
+
 # Chars-per-token approximation (OpenAI's cl100k_base rule of thumb).
 # We chunk by characters for the fast path; only the cap-enforcement step
 # uses the real BGE tokenizer when available.
@@ -596,7 +598,7 @@ def walk_files(path: Path, *, max_file_bytes: int = _DEFAULT_MAX_FILE_BYTES) -> 
 
 def _is_supported(file_path: Path) -> bool:
     """Whether the file's extension is a supported text format."""
-    return file_path.suffix.lower() in _TEXT_EXTENSIONS
+    return file_path.suffix.lower() in _SUPPORTED_EXTENSIONS
 
 
 def _load_gitignore(root: Path) -> list[str]:
@@ -662,6 +664,36 @@ class DocumentStore:
 
     # ── Public API ────────────────────────────────────────────────
 
+    def _read_text_from_file(self, file_path: Path) -> str:
+        """
+            Extract text content from a file. Supports plain text, PDF, and DOCX.
+            Raises OSError if the file cannot be read, or ImportError if the
+            required parser library is not installed (pymupdf for PDF, python-docx for DOCX).
+        """
+        try:
+            ext = file_path.suffix.lower()
+            if ext == ".pdf":
+                try:
+                    import pymupdf
+                    doc = pymupdf.open(file_path)
+                    text = "\n".join(page.get_text() for page in doc)
+                    return text
+                except ImportError:
+                    raise ImportError("pymupdf not available for PDF reading\nInstall with pip install pymupdf")
+            elif ext == ".docx":
+                try:
+                    from docx import Document
+                    doc = Document(file_path)
+                    text = "\n".join(p.text for p in doc.paragraphs)
+                    return text
+                except ImportError:
+                    raise ImportError("python-docx not available for Word document reading\nInstall with pip install python-docx")
+            else:
+                return file_path.read_text(encoding="utf-8", errors="replace")
+        except OSError as e:
+            logger.warning("Skipping %s: %s", file_path, e)
+            raise OSError(f"Failed to read {file_path}: {e}")
+
     def ingest(
         self,
         path: Path | str,
@@ -683,9 +715,14 @@ class DocumentStore:
 
         for file_path in walk_files(path):
             try:
-                text = file_path.read_text(encoding="utf-8", errors="replace")
+                text = self._read_text_from_file(file_path)
             except OSError as e:
                 logger.warning("Skipping %s: %s", file_path, e)
+                files_skipped += 1
+                continue
+            except ImportError as e:
+                logger.warning("Skipping %s: %s", file_path, e)
+                logger.warning("To ingest this file type, install the required library and its dependencies: %s", e)
                 files_skipped += 1
                 continue
 
