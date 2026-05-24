@@ -682,7 +682,7 @@ class DocumentStore:
                     text = "\n".join([page.get_text() for page in doc])
                     return text
                 except ImportError:
-                    raise ImportError("pymupdf not available for PDF reading", "Install with pip install pymupdf")
+                    raise ImportError("pymupdf not available for PDF reading\nInstall with pip install pymupdf")
             elif ext == ".docx":
                 try:
                     from docx import Document
@@ -690,7 +690,7 @@ class DocumentStore:
                     text = "\n".join(p.text for p in doc.paragraphs)
                     return text
                 except ImportError:
-                    raise ImportError("python-docx not available for Word document reading", "Install with pip install python-docx")
+                    raise ImportError("python-docx not available for Word document reading\nInstall with pip install python-docx")
             else:
                 return file_path.read_text(encoding="utf-8", errors="replace")
         except OSError as e:
