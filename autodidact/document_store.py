@@ -672,8 +672,6 @@ class DocumentStore:
         """
         try:
             ext = file_path.suffix.lower()
-            if ext not in _SUPPORTED_EXTENSIONS:
-                raise OSError(f"Unsupported file extension: {ext}")
             if ext == ".pdf":
                 try:
                     import pymupdf
