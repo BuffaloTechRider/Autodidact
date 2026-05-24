@@ -664,28 +664,22 @@ class DocumentStore:
 
     # ── Public API ────────────────────────────────────────────────
 
-    def _get_file_type(self, file_path: Path) -> str:
-        """Determine the file type based on its extension."""
-        ext = file_path.suffix.lower()
-        if ext in _TEXT_EXTENSIONS:
-            return "text"
-        elif ext == ".pdf":
-            return "pdf"
-        elif ext in {".docx"}:
-            return "docx"
-        return "data"
-
     def _read_text_from_file(self, file_path: Path) -> str:
-        """Read a text file, returning OSError|ImportError on failure."""
+        """
+            Extract text content from a file. Supports plain text, PDF, and DOCX.
+            Raises OSError if the file cannot be read, or ImportError if the
+            required parser library is not installed (pymupdf for PDF, python-docx for DOCX).
+        """
         try:
-            ext = self._get_file_type(file_path)
+            ext = file_path.suffix.lower()
+            if ext not in _SUPPORTED_EXTENSIONS:
+                raise OSError(f"Unsupported file extension: {ext}")
             if ext == "pdf":
                 try:
                     import pymupdf
                     doc = pymupdf.open(file_path)
                     text = ""
-                    for page in doc:
-                        text += page.get_text()
+                    text = "\n".join([page.get_text() for page in doc])
                     return text
                 except ImportError:
                     raise ImportError("pymupdf not available for PDF reading", "Install with pip install pymupdf")
@@ -727,6 +721,11 @@ class DocumentStore:
                 text = self._read_text_from_file(file_path)
             except OSError as e:
                 logger.warning("Skipping %s: %s", file_path, e)
+                files_skipped += 1
+                continue
+            except ImportError as e:
+                logger.warning("Skipping %s: %s", file_path, e)
+                logger.warning("To ingest this file type, install the required library and its dependencies: %s", e)
                 files_skipped += 1
                 continue
 
