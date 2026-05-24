@@ -676,7 +676,7 @@ class DocumentStore:
                 try:
                     import pymupdf
                     doc = pymupdf.open(file_path)
-                    text = "\n".join([page.get_text() for page in doc])
+                    text = "\n".join(page.get_text() for page in doc)
                     return text
                 except ImportError:
                     raise ImportError("pymupdf not available for PDF reading\nInstall with pip install pymupdf")
