@@ -294,6 +294,7 @@ class TestConfigLoaderCloudToCloud:
     def test_cloud_cloud_config_creates_agent_with_cloud_local_slot(self, tmp_path):
         """Loading a cloud+cloud config produces an Agent whose 'local' is a cloud client."""
         from autodidact.cli import _agent_from_config
+        from autodidact.llm import OpenAICompatBackend
 
         cfg = {
             "local": {
@@ -312,17 +313,11 @@ class TestConfigLoaderCloudToCloud:
             "routing": {"confidence_threshold": 0.7},
         }
 
-        with patch("autodidact.cli.Agent") as MockAgent:
-            mock_agent = MagicMock()
-            mock_agent._embed_client = MagicMock()
-            mock_agent._conn = MagicMock()
-            mock_agent._config = MagicMock(embedding_dim=1024)
-            MockAgent.return_value = mock_agent
+        agent = _agent_from_config(cfg)
 
-            _agent_from_config(cfg)
-
-            # Inspect the Agent(...) call.
-            call_kwargs = MockAgent.call_args.kwargs
-            assert call_kwargs.get("local_model") == "openai/gpt-4o-mini"
-            assert call_kwargs.get("local_base_url") == "https://api.openai.com/v1"
-            assert call_kwargs.get("local_api_key_env") is not None
+        # Both slots end up using the OpenAI-compat backend (cloud-cloud mode).
+        assert isinstance(agent._local_client._backend, OpenAICompatBackend)
+        assert isinstance(agent._cloud_client._backend, OpenAICompatBackend)
+        assert agent._local_client.config.model == "gpt-4o-mini"
+        assert agent._local_client.config.base_url == "https://api.openai.com/v1"
+        assert agent._cloud_client.config.model == "gpt-4o"
