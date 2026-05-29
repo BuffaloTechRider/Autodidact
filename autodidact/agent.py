@@ -31,6 +31,12 @@ import numpy as np
 
 from autodidact.database import init_database
 from autodidact.document_store import DocumentStore, ScoredChunk
+from autodidact.events import (
+    CloudCallEvent,
+    CloudDoneEvent,
+    ProgressEvent,
+    TokenEvent,
+)
 from autodidact.knowledge_store import KnowledgeStore, ScoredKnowledgeEntry
 from autodidact.learning_extractor import ExtractionResult, LearningExtractor
 from autodidact.llm_client import ChatMessage, ChatResponseWithLogprobs, LLMClient, LLMConfig
@@ -50,8 +56,9 @@ from autodidact.routing.stages import (
     MemoryStageDeps,
 )
 
-# Type alias for progress callbacks.
-ProgressCallback = Optional[Callable[[dict], None]]
+# Type alias for progress callbacks. Receives ProgressEvent instances —
+# see autodidact/events.py for the typed shapes.
+ProgressCallback = Optional[Callable[[ProgressEvent], None]]
 
 logger = logging.getLogger(__name__)
 
@@ -549,7 +556,11 @@ class Agent:
 
         if provider == "ollama":
             def _on_chunk(chunk: dict) -> None:
-                emit({"type": "token", "source": "local", **chunk})
+                emit(TokenEvent(
+                    source="local",
+                    phase=chunk.get("phase", "content"),
+                    text=chunk.get("text", ""),
+                ))
 
             return self._local_client.chat_stream_ollama_no_logprobs(
                 messages,
@@ -581,7 +592,11 @@ class Agent:
 
         if provider in ("ollama", "openai", "bedrock"):
             def _on_chunk(chunk: dict) -> None:
-                emit({"type": "token", "source": "cloud", **chunk})
+                emit(TokenEvent(
+                    source="cloud",
+                    phase=chunk.get("phase", "content"),
+                    text=chunk.get("text", ""),
+                ))
             return self._cloud_client.chat_stream(
                 messages,
                 on_token=_on_chunk,
@@ -619,18 +634,17 @@ class Agent:
         """Send to cloud, learn from the answer."""
         assert self._cloud_client is not None
 
-        emit({"type": "cloud_call", "model": self._cloud_model_name or "unknown"})
+        emit(CloudCallEvent(model=self._cloud_model_name or "unknown"))
 
         messages, _ = self._build_messages(question, context, memory_hits)
         cloud_resp = self._call_cloud(messages, emit)
         cost = self._estimate_cost(cloud_resp.input_tokens, cloud_resp.output_tokens)
 
-        emit({
-            "type": "cloud_done",
-            "model": self._cloud_model_name or "unknown",
-            "cost": cost,
-            "latency_ms": cloud_resp.latency_ms,
-        })
+        emit(CloudDoneEvent(
+            model=self._cloud_model_name or "unknown",
+            cost=cost,
+            latency_ms=cloud_resp.latency_ms,
+        ))
 
         # Learn from escalation in background — don't block the user.
         # Skip learning if cloud gave a non-answer.

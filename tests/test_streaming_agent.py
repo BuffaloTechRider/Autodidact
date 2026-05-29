@@ -104,17 +104,18 @@ class TestCloudStreamingViaAgent:
 
         assert resp.routed_to == "cloud"
         # cloud_call/cloud_done sandwich should still fire.
-        types = [e.get("type") for e in events]
-        assert "cloud_call" in types
-        assert "cloud_done" in types
+        from autodidact.events import CloudCallEvent, CloudDoneEvent, TokenEvent
+        types = [type(e) for e in events]
+        assert CloudCallEvent in types
+        assert CloudDoneEvent in types
 
         # Token events from the cloud stream.
-        token_events = [e for e in events if e.get("type") == "token"]
+        token_events = [e for e in events if isinstance(e, TokenEvent)]
         # Local emitted 1 + cloud emitted 3 = 4 tokens.
         assert len(token_events) >= 3
         cloud_tokens = "".join(
-            e.get("text", "") for e in token_events
-            if e.get("phase") == "content" and e.get("source") == "cloud"
+            e.text for e in token_events
+            if e.phase == "content" and e.source == "cloud"
         )
         assert cloud_tokens == "Paris is the capital."
 
@@ -124,9 +125,10 @@ class TestCloudStreamingViaAgent:
         events = []
         agent.query("question?", on_progress=events.append)
 
+        from autodidact.events import TokenEvent
         cloud_token_events = [
             e for e in events
-            if e.get("type") == "token" and e.get("source") == "cloud"
+            if isinstance(e, TokenEvent) and e.source == "cloud"
         ]
         assert len(cloud_token_events) >= 3, (
             f"Expected cloud token events with source='cloud'; got {events}"
@@ -137,8 +139,9 @@ class TestCloudStreamingViaAgent:
         events = []
         agent.query("question?", on_progress=events.append)
 
+        from autodidact.events import TokenEvent
         local_token_events = [
             e for e in events
-            if e.get("type") == "token" and e.get("source") == "local"
+            if isinstance(e, TokenEvent) and e.source == "local"
         ]
         assert len(local_token_events) >= 1
