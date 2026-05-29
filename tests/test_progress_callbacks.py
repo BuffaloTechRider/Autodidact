@@ -99,33 +99,37 @@ class TestProgressEventsLocalRoute:
 
     def test_local_route_emits_thinking_then_local_done(self, agent_with_mocks):
         """Local route: thinking → local_done → answer."""
+        from autodidact.events import LocalDoneEvent, ThinkingEvent
+
         events = []
         agent_with_mocks.query("Easy question", on_progress=lambda e: events.append(e))
 
-        event_types = [e["type"] for e in events]
-        assert "thinking" in event_types
-        assert "local_done" in event_types
-        # thinking should come before local_done
-        assert event_types.index("thinking") < event_types.index("local_done")
+        types = [type(e) for e in events]
+        assert ThinkingEvent in types
+        assert LocalDoneEvent in types
+        assert types.index(ThinkingEvent) < types.index(LocalDoneEvent)
 
     def test_thinking_event_has_memory_info(self, agent_with_mocks):
         """The thinking event should include memory search results."""
+        from autodidact.events import ThinkingEvent
+
         events = []
         agent_with_mocks.query("Question", on_progress=lambda e: events.append(e))
 
-        thinking = [e for e in events if e["type"] == "thinking"]
+        thinking = [e for e in events if isinstance(e, ThinkingEvent)]
         assert len(thinking) == 1
-        assert "memory_hits" in thinking[0]
+        assert hasattr(thinking[0], "memory_hits")
 
     def test_local_done_event_has_confidence(self, agent_with_mocks):
         """The local_done event should include the confidence score."""
+        from autodidact.events import LocalDoneEvent
+
         events = []
         agent_with_mocks.query("Question", on_progress=lambda e: events.append(e))
 
-        local_done = [e for e in events if e["type"] == "local_done"]
+        local_done = [e for e in events if isinstance(e, LocalDoneEvent)]
         assert len(local_done) == 1
-        assert "confidence" in local_done[0]
-        assert local_done[0]["confidence"] > 0.7
+        assert local_done[0].confidence > 0.7
 
 
 class TestProgressEventsCloudRoute:
@@ -133,6 +137,8 @@ class TestProgressEventsCloudRoute:
 
     def test_cloud_route_emits_cloud_call_and_cloud_done(self, agent_with_mocks):
         """Cloud route: thinking → cloud_call → cloud_done. Learning is async (no event)."""
+        from autodidact.events import CloudCallEvent, CloudDoneEvent, ThinkingEvent
+
         agent = agent_with_mocks
         agent._local_client.chat_with_logprobs.return_value = ChatResponseWithLogprobs(
             content="I don't have real-time data on that.", model="qwen2.5:7b", avg_logprob=-3.0,
@@ -143,13 +149,15 @@ class TestProgressEventsCloudRoute:
         events = []
         agent.query("Hard question", on_progress=lambda e: events.append(e))
 
-        event_types = [e["type"] for e in events]
-        assert "thinking" in event_types
-        assert "cloud_call" in event_types
-        assert "cloud_done" in event_types
+        types = [type(e) for e in events]
+        assert ThinkingEvent in types
+        assert CloudCallEvent in types
+        assert CloudDoneEvent in types
 
     def test_cloud_done_event_has_cost(self, agent_with_mocks):
         """The cloud_done event should include cost and latency."""
+        from autodidact.events import CloudDoneEvent
+
         agent = agent_with_mocks
         agent._local_client.chat_with_logprobs.return_value = ChatResponseWithLogprobs(
             content="I don't have real-time data on that.", model="qwen2.5:7b", avg_logprob=-3.0,
@@ -160,10 +168,10 @@ class TestProgressEventsCloudRoute:
         events = []
         agent.query("Hard question", on_progress=lambda e: events.append(e))
 
-        cloud_done = [e for e in events if e["type"] == "cloud_done"]
+        cloud_done = [e for e in events if isinstance(e, CloudDoneEvent)]
         assert len(cloud_done) == 1
-        assert "cost" in cloud_done[0]
-        assert "model" in cloud_done[0]
+        assert hasattr(cloud_done[0], "cost")
+        assert hasattr(cloud_done[0], "model")
 
     def test_learning_happens_in_background(self, agent_with_mocks):
         """Learning from escalation runs async — response returns before learning completes."""
@@ -186,6 +194,8 @@ class TestProgressEventsMemoryRoute:
 
     def test_memory_route_emits_memory_hit(self, agent_with_mocks):
         """Memory route: thinking (with high-sim hit) → memory_hit."""
+        from autodidact.events import MemoryHitEvent, ThinkingEvent
+
         agent = agent_with_mocks
         # Seed a memory entry.
         emb = agent._embed_client.embed("test")
@@ -201,6 +211,6 @@ class TestProgressEventsMemoryRoute:
         events = []
         agent.query("What is the capital of France?", on_progress=lambda e: events.append(e))
 
-        event_types = [e["type"] for e in events]
-        assert "thinking" in event_types
-        assert "memory_hit" in event_types
+        types = [type(e) for e in events]
+        assert ThinkingEvent in types
+        assert MemoryHitEvent in types

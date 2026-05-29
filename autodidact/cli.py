@@ -1302,32 +1302,38 @@ def _run_with_spinner(call: Callable[[Callable[[dict], None]], QueryResponse]) -
     with console.status("[dim]Thinking...", spinner="dots") as status:
         state["status"] = status
 
-        def on_progress(event: dict) -> None:
-            et = event.get("type")
+        def on_progress(event) -> None:
+            from autodidact.events import (
+                CloudCallEvent,
+                CloudDoneEvent,
+                GsaCheckEvent,
+                LocalDoneEvent,
+                MemoryHitEvent,
+                ThinkingEvent,
+                TokenEvent,
+            )
 
-            if et == "thinking":
-                hits = event.get("memory_hits", 0)
-                if hits:
-                    status.update(f"[dim]Checking memory... found {hits} similar entries")
+            if isinstance(event, ThinkingEvent):
+                if event.memory_hits:
+                    status.update(
+                        f"[dim]Checking memory... found {event.memory_hits} similar entries"
+                    )
                 else:
                     status.update("[dim]Checking memory...")
 
-            elif et == "gsa_check":
+            elif isinstance(event, GsaCheckEvent):
                 status.update("[dim]Confirming with local brain...")
 
-            elif et == "memory_hit":
+            elif isinstance(event, MemoryHitEvent):
                 status.update("[dim]Recalling from memory...")
 
-            elif et == "token":
-                phase = event.get("phase", "content")
-                source = event.get("source", "local")
-                text = event.get("text", "")
-                if not text:
+            elif isinstance(event, TokenEvent):
+                if not event.text:
                     return
 
-                if phase == "thinking":
+                if event.phase == "thinking":
                     if state["phase"] != "thinking":
-                        if source == "local":
+                        if event.source == "local":
                             status.update(
                                 "[dim]Local brain working...\n"
                                 "  If I fumble this one, type /cloud to ask my sensei"
@@ -1335,51 +1341,41 @@ def _run_with_spinner(call: Callable[[Callable[[dict], None]], QueryResponse]) -
                         else:
                             status.update("[dim]Thinking...")
                         state["phase"] = "thinking"
-                    state["thinking_buf"].append(text)
+                    state["thinking_buf"].append(event.text)
 
-                elif phase == "content":
+                elif event.phase == "content":
                     # First content token from this source — drop spinner and
                     # start printing tokens directly.
-                    if not state["rendering_live"] or state["source"] != source:
+                    if not state["rendering_live"] or state["source"] != event.source:
                         if state["rendering_live"]:
                             # Source switched (rare: local, then cloud during one query).
-                            # Close the previous line cleanly.
                             console.print()
                             state["rendering_live"] = False
                             status.start()
-                        _start_streaming(source)
-                    console.print(text, end="", soft_wrap=True, highlight=False)
-                    state["content_buf"].append(text)
+                        _start_streaming(event.source)
+                    console.print(event.text, end="", soft_wrap=True, highlight=False)
+                    state["content_buf"].append(event.text)
 
-            elif et == "local_done":
+            elif isinstance(event, LocalDoneEvent):
                 # Non-streaming path (e.g. test mock or non-Ollama local).
                 if not state["rendering_live"]:
-                    conf = event.get("confidence", 0.0)
-                    status.update(f"[dim]Local answer (confidence {conf:.2f})...")
+                    status.update(f"[dim]Local answer (confidence {event.confidence:.2f})...")
 
-            elif et == "cloud_call":
+            elif isinstance(event, CloudCallEvent):
                 # If we already streamed local content, finish that line.
                 if state["rendering_live"]:
                     console.print()
                     state["rendering_live"] = False
                     state["source"] = None
                     status.start()
-                model = event.get("model", "cloud")
-                status.update(f"[dim]Asking {model}...")
+                status.update(f"[dim]Asking {event.model}...")
 
-            elif et == "cloud_done":
+            elif isinstance(event, CloudDoneEvent):
                 # Token-level streaming has already shown the answer; this
                 # event still fires after the stream ends. If we never
                 # streamed cloud (test mock), update the spinner.
                 if not state["rendering_live"]:
                     status.update("[dim]Got cloud answer, learning from it...")
-
-            elif et == "learning":
-                if state["rendering_live"]:
-                    # Don't clobber the streamed answer; just print a hint.
-                    pass
-                else:
-                    status.update("[dim]Storing new knowledge...")
 
         resp = call(on_progress)
 

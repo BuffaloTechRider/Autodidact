@@ -20,6 +20,13 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
+from autodidact.events import (
+    GsaCheckEvent,
+    LocalDoneEvent,
+    MemoryHitEvent,
+    ThinkingEvent,
+)
+
 
 # ── RoutingState basics ──────────────────────────────────────────
 
@@ -47,14 +54,16 @@ class TestRoutingState:
         assert state.local_response is None
 
     def test_emit_is_callable(self):
+        from autodidact.events import GsaCheckEvent
         from autodidact.routing import RoutingState
 
         events: list = []
         state = RoutingState(
             question="hi", context=None, started=0.0, emit=events.append,
         )
-        state.emit({"type": "test", "val": 1})
-        assert events == [{"type": "test", "val": 1}]
+        ev = GsaCheckEvent()
+        state.emit(ev)
+        assert events == [ev]
 
 
 # ── Outcome types ────────────────────────────────────────────────
@@ -226,10 +235,10 @@ class TestMemoryStage:
         state = self._make_state()
         stage(state)
         events = state._captured_events  # type: ignore[attr-defined]
-        thinking = [e for e in events if e["type"] == "thinking"]
+        thinking = [e for e in events if isinstance(e, ThinkingEvent)]
         assert len(thinking) == 1
-        assert thinking[0]["memory_hits"] == 1
-        assert thinking[0]["best_similarity"] == 0.5
+        assert thinking[0].memory_hits == 1
+        assert thinking[0].best_similarity == 0.5
 
     def test_populates_state_with_hits(self):
         from autodidact.routing.stages import MemoryStage
@@ -292,7 +301,7 @@ class TestMemoryStage:
         assert appended and appended[0][0] == state.question
         # memory_hit event emitted
         events = state._captured_events  # type: ignore[attr-defined]
-        assert any(e["type"] == "memory_hit" for e in events)
+        assert any(isinstance(e, MemoryHitEvent) for e in events)
 
     def test_continues_on_no_hits(self):
         from autodidact.routing import Continue
@@ -356,7 +365,7 @@ class TestMemoryStage:
         out = MemoryStage(deps)(state)
         assert isinstance(out, Continue)
         events = state._captured_events  # type: ignore[attr-defined]
-        assert not any(e["type"] == "memory_hit" for e in events)
+        assert not any(isinstance(e, MemoryHitEvent) for e in events)
 
     def test_continues_when_no_local_client_even_on_direct_hit(self):
         """If there's no local client to render the answer, fall through.
@@ -491,7 +500,7 @@ class TestGsaPreGateStage:
         assert isinstance(out, Continue)
         assert state.gsa_p_yes == 0.92
         events = state._captured_events  # type: ignore[attr-defined]
-        assert any(e["type"] == "gsa_check" for e in events)
+        assert any(isinstance(e, GsaCheckEvent) for e in events)
 
     def test_resolves_on_low_p_yes(self):
         """Low p_yes → escalate to cloud, response gets escalated_on_gsa=True."""
@@ -606,7 +615,9 @@ class TestLocalGenerationStage:
         assert out.response.context_sources == ["src1"]
         assert appended == [("q?", "Paris.")]
         events = state._captured_events  # type: ignore[attr-defined]
-        assert any(e["type"] == "local_done" and e["confidence"] == 1.0 for e in events)
+        assert any(
+            isinstance(e, LocalDoneEvent) and e.confidence == 1.0 for e in events
+        )
 
     def test_continues_on_refusal_so_cloud_can_handle(self):
         from autodidact.routing import Continue
@@ -744,8 +755,8 @@ class TestCloudEscalationStage:
         assert "Paris" in out.response.answer
         # Event protocol: emits local_done with confidence=0.5 on the fallback.
         events = state._captured_events  # type: ignore[attr-defined]
-        local_done = [e for e in events if e["type"] == "local_done"]
-        assert local_done and local_done[0]["confidence"] == 0.5
+        local_done = [e for e in events if isinstance(e, LocalDoneEvent)]
+        assert local_done and local_done[0].confidence == 0.5
 
     def test_force_mode_escalates_unconditionally(self):
         """In force=True (correct() path) the stage escalates without the refusal flag."""

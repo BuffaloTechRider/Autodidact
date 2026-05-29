@@ -18,6 +18,13 @@ from typing import Any, Callable, Optional, TYPE_CHECKING
 
 import numpy as np
 
+from autodidact.events import (
+    CloudCallEvent,
+    GsaCheckEvent,
+    LocalDoneEvent,
+    MemoryHitEvent,
+    ThinkingEvent,
+)
 from autodidact.routing import Continue, Resolved, RoutingState, StageOutcome
 
 if TYPE_CHECKING:
@@ -87,11 +94,10 @@ class MemoryStage:
         state.q_emb = q_emb
         state.best_hit = memory_hits[0] if memory_hits else None
 
-        state.emit({
-            "type": "thinking",
-            "memory_hits": len(memory_hits),
-            "best_similarity": state.best_hit.score if state.best_hit else 0.0,
-        })
+        state.emit(ThinkingEvent(
+            memory_hits=len(memory_hits),
+            best_similarity=state.best_hit.score if state.best_hit else 0.0,
+        ))
 
         if state.best_hit is None or state.best_hit.score < _memory_direct_threshold():
             return Continue()
@@ -108,12 +114,11 @@ class MemoryStage:
             )
             return Continue()
 
-        state.emit({
-            "type": "memory_hit",
-            "similarity": state.best_hit.score,
-            "memory_source": entry.question,
-            "age_days": age_days,
-        })
+        state.emit(MemoryHitEvent(
+            similarity=state.best_hit.score,
+            memory_source=entry.question,
+            age_days=age_days,
+        ))
 
         if not self.deps.has_local_client:
             # Quirk preserved from agent.py:286 — direct hit but no local
@@ -206,7 +211,7 @@ class GsaPreGateStage:
             except Exception:
                 pass
 
-        state.emit({"type": "gsa_check"})
+        state.emit(GsaCheckEvent())
         try:
             probe = self.deps.build_gsa_fn()
             result = probe.compute(state.question, retrieved_hits=state.memory_hits)
@@ -285,7 +290,7 @@ class LocalGenerationStage:
             return Continue()
 
         confidence = 1.0
-        state.emit({"type": "local_done", "confidence": confidence})
+        state.emit(LocalDoneEvent(confidence=confidence))
         latency = _elapsed_ms_for(state)
         self.deps.record_query_fn(
             "local", 0.0, confidence, latency, question=state.question,
@@ -362,7 +367,7 @@ class CloudEscalationStage:
                 "CloudEscalationStage(force=False) without cloud expects "
                 "LocalGenerationStage to have populated state.local_response"
             )
-            state.emit({"type": "local_done", "confidence": 0.5})
+            state.emit(LocalDoneEvent(confidence=0.5))
             latency = _elapsed_ms_for(state)
             self.deps.record_query_fn(
                 "local", 0.0, 0.5, latency, question=state.question,

@@ -20,6 +20,7 @@ import numpy as np
 
 if TYPE_CHECKING:
     from autodidact.agent import QueryResponse
+    from autodidact.events import ProgressEvent
     from autodidact.knowledge_store import ScoredKnowledgeEntry
     from autodidact.llm_client import ChatResponse
 
@@ -36,7 +37,7 @@ class RoutingState:
     question: str
     context: Optional[str]
     started: float                                  # time.perf_counter() at query start
-    emit: Callable[[dict], None]                    # _emit closure preserves event protocol
+    emit: Callable[["ProgressEvent"], None]         # typed event callback
 
     # Populated by MemoryStage
     memory_hits: list["ScoredKnowledgeEntry"] = field(default_factory=list)
