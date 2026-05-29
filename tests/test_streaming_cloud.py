@@ -67,7 +67,7 @@ class TestOpenAIStreaming:
         mock_oa_client = MagicMock()
         mock_oa_client.chat.completions.create = mock_create
 
-        with patch.object(openai_client, "_get_openai_client", return_value=mock_oa_client):
+        with patch.object(openai_client._backend, "_get_client", return_value=mock_oa_client):
             tokens = []
             result = openai_client.chat_stream_openai(
                 [ChatMessage(role="user", content="say hi")],
@@ -84,7 +84,7 @@ class TestOpenAIStreaming:
         mock_oa_client = MagicMock()
         mock_oa_client.chat.completions.create = MagicMock(return_value=iter([]))
 
-        with patch.object(openai_client, "_get_openai_client", return_value=mock_oa_client):
+        with patch.object(openai_client._backend, "_get_client", return_value=mock_oa_client):
             openai_client.chat_stream_openai(
                 [ChatMessage(role="user", content="x")],
                 on_token=lambda _: None,
@@ -97,7 +97,7 @@ class TestOpenAIStreaming:
         mock_oa_client = MagicMock()
         mock_oa_client.chat.completions.create = MagicMock(return_value=iter([]))
 
-        with patch.object(openai_client, "_get_openai_client", return_value=mock_oa_client):
+        with patch.object(openai_client._backend, "_get_client", return_value=mock_oa_client):
             result = openai_client.chat_stream_openai(
                 [ChatMessage(role="user", content="x")],
                 on_token=lambda _: None,
@@ -146,7 +146,7 @@ class TestBedrockStreaming:
         mock_bedrock = MagicMock()
         mock_bedrock.converse_stream.return_value = {"stream": iter(events)}
 
-        with patch.object(bedrock_client, "_get_bedrock_client", return_value=mock_bedrock):
+        with patch.object(bedrock_client._backend, "_get_client", return_value=mock_bedrock):
             tokens = []
             result = bedrock_client.chat_stream_bedrock(
                 [ChatMessage(role="user", content="capital?")],
@@ -170,7 +170,7 @@ class TestBedrockStreaming:
         mock_bedrock = MagicMock()
         mock_bedrock.converse_stream.return_value = {"stream": iter(events)}
 
-        with patch.object(bedrock_client, "_get_bedrock_client", return_value=mock_bedrock):
+        with patch.object(bedrock_client._backend, "_get_client", return_value=mock_bedrock):
             tokens = []
             bedrock_client.chat_stream_bedrock(
                 [ChatMessage(role="user", content="capital?")],
@@ -193,7 +193,7 @@ class TestBedrockStreaming:
         mock_bedrock = MagicMock()
         mock_bedrock.converse_stream.side_effect = err
 
-        with patch.object(bedrock_client, "_get_bedrock_client", return_value=mock_bedrock):
+        with patch.object(bedrock_client._backend, "_get_client", return_value=mock_bedrock):
             with pytest.raises(LLMClientError):
                 bedrock_client.chat_stream_bedrock(
                     [ChatMessage(role="user", content="x")],

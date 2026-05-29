@@ -179,7 +179,7 @@ class TestNonStreamingSetsHadThinking:
             "eval_count": 1,
             "logprobs": [{"token": "Paris", "logprob": -0.1, "top_logprobs": []}],
         }
-        with patch.object(client, "_ollama_post", return_value=fake_data):
+        with patch.object(client._backend, "_post", return_value=fake_data):
             result = client.chat_with_logprobs(
                 [ChatMessage(role="user", content="capital?")],
             )
@@ -195,7 +195,7 @@ class TestNonStreamingSetsHadThinking:
             "prompt_eval_count": 5,
             "eval_count": 1,
         }
-        with patch.object(client, "_ollama_post", return_value=fake_data):
+        with patch.object(client._backend, "_post", return_value=fake_data):
             result = client.chat_with_logprobs(
                 [ChatMessage(role="user", content="capital?")],
             )
