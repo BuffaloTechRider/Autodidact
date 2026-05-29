@@ -35,6 +35,19 @@ from autodidact.learning_extractor import ExtractionResult, LearningExtractor
 from autodidact.llm_client import ChatMessage, ChatResponseWithLogprobs, LLMClient, LLMConfig
 from autodidact.signals.grounded_self_assessment import SelfAssessment
 from autodidact.types import AutodidactConfig, NewKnowledgeEntry
+from autodidact.routing import RoutingState, run_pipeline
+from autodidact.routing.stages import (
+    CloudEscalationDeps,
+    CloudEscalationStage,
+    CorrectionInvalidationDeps,
+    CorrectionInvalidationStage,
+    GsaPreGateDeps,
+    GsaPreGateStage,
+    LocalGenerationDeps,
+    LocalGenerationStage,
+    MemoryStage,
+    MemoryStageDeps,
+)
 
 # Type alias for progress callbacks.
 ProgressCallback = Optional[Callable[[dict], None]]
@@ -209,6 +222,14 @@ class Agent:
         # when enabled. Built lazily on first use so tests can patch it.
         self._gsa: Optional[SelfAssessment] = None
 
+        # Routing pipelines — list of RoutingStage callables. Built lazily
+        # so tests that bypass __init__ via Agent.__new__ still get default
+        # stages on the first query/correct call. Tests can preempt by
+        # setting _query_stages / _correct_stages directly.
+        self._query_stages: Optional[list] = None
+        self._correct_stages: Optional[list] = None
+        self._build_default_stages()
+
     # ── Public API ────────────────────────────────────────────────
 
     def attach_document_store(self, store: DocumentStore) -> None:
@@ -219,6 +240,102 @@ class Agent:
         documents' vs 'from past interactions').
         """
         self.documents = store
+
+    # ── Routing pipeline construction ─────────────────────────────
+
+    def _build_default_stages(self) -> None:
+        """Wire the default query and correct pipelines.
+
+        Called from __init__. Tests that bypass __init__ can either
+        - call this method themselves, or
+        - set _query_stages / _correct_stages directly with stubs.
+        """
+        memory_deps = MemoryStageDeps(
+            check_memory_fn=self._check_memory,
+            knowledge_store_access=self.memory.access,
+            entry_age_fn=self._entry_age_days,
+            staleness_days=self.staleness_days,
+            has_local_client=self._local_client is not None,
+            build_messages_fn=self._build_messages,
+            call_local_fn=self._call_local,
+            record_query_fn=self._record_query,
+            append_history_fn=self._append_history,
+        )
+
+        gsa_deps = GsaPreGateDeps(
+            gsa_enabled=getattr(self, "gsa_enabled", True),
+            gsa_threshold=getattr(self, "gsa_threshold", 0.55),
+            has_local_client=self._local_client is not None,
+            has_cloud_client=self._cloud_client is not None,
+            document_search_fn=self._gsa_doc_search,
+            build_gsa_fn=self._build_gsa_probe,
+            escalate_fn=self._escalate_for_pipeline,
+        )
+
+        local_deps = LocalGenerationDeps(
+            has_local_client=self._local_client is not None,
+            has_cloud_client=self._cloud_client is not None,
+            build_messages_fn=self._build_messages,
+            call_local_fn=self._call_local,
+            refusal_detector=_looks_like_refusal,
+            record_query_fn=self._record_query,
+            append_history_fn=self._append_history,
+        )
+
+        cloud_deps = CloudEscalationDeps(
+            has_cloud_client=self._cloud_client is not None,
+            escalate_fn=self._escalate_for_pipeline,
+            record_query_fn=self._record_query,
+            append_history_fn=self._append_history,
+        )
+
+        correction_deps = CorrectionInvalidationDeps(
+            has_embed_client=self._embed_client is not None,
+            embed_fn=(self._embed_client.embed if self._embed_client else (lambda t: None)),
+            memory_search_fn=self.memory.search,
+            memory_invalidate_fn=self.memory.invalidate,
+        )
+
+        self._query_stages = [
+            MemoryStage(memory_deps),
+            GsaPreGateStage(gsa_deps),
+            LocalGenerationStage(local_deps),
+            CloudEscalationStage(cloud_deps, force=False),
+        ]
+        self._correct_stages = [
+            CorrectionInvalidationStage(correction_deps),
+            CloudEscalationStage(cloud_deps, force=True),
+        ]
+
+    def _gsa_doc_search(self, question: str, q_emb):
+        """Adapter for GsaPreGateStage's document_search_fn.
+
+        Returns [] when no document store is attached so the stage's
+        threshold check (>= 0.75) is a no-op.
+        """
+        store = getattr(self, "documents", None)
+        if store is None:
+            return []
+        return store.search(question, limit=1, query_embedding=q_emb)
+
+    def _build_gsa_probe(self):
+        """Adapter for GsaPreGateStage's build_gsa_fn — lazy, patchable.
+
+        Tests preset agent._gsa (e.g. with MagicMock) to control the probe.
+        Production constructs SelfAssessment(self._local_client) on first use.
+        """
+        if getattr(self, "_gsa", None) is None:
+            self._gsa = SelfAssessment(self._local_client)
+        return self._gsa
+
+    def _escalate_for_pipeline(self, state: RoutingState):
+        """Adapter for stages' escalate_fn. Forwards to _escalate_to_cloud
+        with the right escalated_on_refusal flag from RoutingState."""
+        return self._escalate_to_cloud(
+            state.question, state.context, state.memory_hits,
+            state.started, state.emit,
+            escalated_on_refusal=state.refused,
+        )
 
     def query(
         self,
@@ -241,10 +358,11 @@ class Agent:
             containing at minimum a "type" key. Event types:
             - thinking: memory search started, includes memory_hits count
             - memory_hit: answering from memory (high similarity)
+            - gsa_check: GSA pre-gate probe is running
             - local_done: local model answered, includes confidence
             - cloud_call: escalating to cloud, includes model name
             - cloud_done: cloud response received, includes cost and model
-            - learning: knowledge stored, includes knowledge_count
+            - token: streaming token; includes phase, source, text
         """
         started = time.perf_counter()
 
@@ -252,169 +370,16 @@ class Agent:
             if on_progress is not None:
                 on_progress(event)
 
-        # ── Stage 1: Check memory ────────────────────────────────
-        memory_hits, q_emb = self._check_memory(question)
-        best_hit = memory_hits[0] if memory_hits else None
+        if getattr(self, "_query_stages", None) is None:
+            self._build_default_stages()
 
-        _emit({
-            "type": "thinking",
-            "memory_hits": len(memory_hits),
-            "best_similarity": best_hit.score if best_hit else 0.0,
-        })
-
-        if best_hit and best_hit.score >= MEMORY_DIRECT_THRESHOLD:
-            entry = best_hit.entry
-            self.memory.access(entry.id)
-            age_days = self._entry_age_days(entry)
-            is_stale = age_days > self.staleness_days
-
-            if is_stale:
-                logger.info(
-                    "Memory hit is stale (%.1f days old); falling through to local",
-                    age_days,
-                )
-            else:
-                _emit({
-                    "type": "memory_hit",
-                    "similarity": best_hit.score,
-                    "memory_source": entry.question,
-                    "age_days": age_days,
-                })
-
-                if self._local_client is not None:
-                    # Generate answer using memory as context (streaming).
-                    messages, ctx_sources = self._build_messages(question, context, memory_hits)
-                    local_resp = self._call_local(messages, _emit)
-                    answer = local_resp.content
-
-                    latency = _elapsed_ms(started)
-                    self._record_query("memory", 0.0, best_hit.score, latency, question=question)
-                    self._append_history(question, answer)
-                    return QueryResponse(
-                        answer=answer,
-                        routed_to="memory",
-                        confidence=best_hit.score,
-                        cost_usd=0.0,
-                        learned=False,
-                        latency_ms=latency,
-                        context_sources=ctx_sources,
-                        memory_source=entry.question,
-                        memory_age_days=age_days,
-                        stale=False,
-                    )
-
-        # ── Stage 1.5: GSA pre-gate ──────────────────────────────
-        # Ask the local model "can you answer this?" before full generation.
-        # GSA sees both memory hits AND document hits so it knows what
-        # context the local model will have available.
-        gsa_p_yes: Optional[float] = None
-        gsa_enabled = getattr(self, "gsa_enabled", True)
-        gsa_threshold = getattr(self, "gsa_threshold", 0.55)
-        best_similarity = best_hit.score if best_hit else 0.0
-        skip_gsa = best_similarity >= MEMORY_DIRECT_THRESHOLD
-        if (
-            gsa_enabled
-            and not skip_gsa
-            and self._local_client is not None
-            and self._cloud_client is not None
-        ):
-            # Check if documents have relevant context — if so, GSA should
-            # know about it (prevents false escalation on doc-answerable queries).
-            has_doc_context = False
-            store = getattr(self, "documents", None)
-            if store is not None:
-                try:
-                    doc_hits = store.search(question, limit=1, query_embedding=q_emb)
-                    has_doc_context = bool(doc_hits and doc_hits[0].score >= 0.75)
-                except Exception:
-                    pass
-
-            # Skip GSA if strong document context exists — the local model
-            # will have the information it needs to answer.
-            if has_doc_context:
-                skip_gsa = True
-
-            if not skip_gsa:
-                _emit({"type": "gsa_check"})
-                try:
-                    if getattr(self, "_gsa", None) is None:
-                        self._gsa = SelfAssessment(self._local_client)
-                    gsa_result = self._gsa.compute(question, retrieved_hits=memory_hits)
-                    gsa_p_yes = gsa_result.p_yes
-                except Exception as e:
-                    logger.warning("GSA probe failed, skipping gate: %s", e)
-                    gsa_p_yes = None
-
-            if gsa_p_yes is not None and gsa_p_yes < gsa_threshold:
-                # Model self-reports it can't answer — skip local entirely.
-                # Note: errors from _escalate_to_cloud propagate (no try/except
-                # wrapping it) so the user sees real problems like "Bedrock
-                # rejected request: ValidationException".
-                resp = self._escalate_to_cloud(
-                    question, context, memory_hits, started, _emit,
-                )
-                resp.escalated_on_gsa = True
-                resp.gsa_p_yes = gsa_p_yes
-                return resp
-
-        # ── Stage 2: Generate locally ────────────────────────────
-        if self._local_client is None:
-            # No local model — go straight to cloud.
-            if self._cloud_client is None:
-                return QueryResponse(
-                    answer="No model configured. Run `autodidact init` to set up.",
-                    routed_to="local", confidence=0.0, cost_usd=0.0,
-                    learned=False, latency_ms=_elapsed_ms(started),
-                )
-            return self._escalate_to_cloud(question, context, memory_hits, started, _emit)
-
-        messages, ctx_sources = self._build_messages(question, context, memory_hits)
-        local_resp = self._call_local(messages, _emit)
-
-        refused = _looks_like_refusal(local_resp.content)
-
-        if not refused:
-            confidence = 1.0
-            _emit({"type": "local_done", "confidence": confidence})
-            latency = _elapsed_ms(started)
-            cost = 0.0
-            self._record_query("local", cost, confidence, latency, question=question)
-            self._append_history(question, local_resp.content)
-            return QueryResponse(
-                answer=local_resp.content,
-                routed_to="local",
-                confidence=confidence,
-                cost_usd=cost,
-                learned=False,
-                latency_ms=latency,
-                context_sources=ctx_sources,
-                memory_similarity=best_hit.score if best_hit else None,
-                gsa_p_yes=gsa_p_yes,
-            )
-
-        # ── Stage 3: Escalate to cloud ───────────────────────────
-        if self._cloud_client is None:
-            # No cloud model — return local answer anyway with neutral confidence.
-            _emit({"type": "local_done", "confidence": 0.5})
-            latency = _elapsed_ms(started)
-            self._record_query("local", 0.0, 0.5, latency, question=question)
-            self._append_history(question, local_resp.content)
-            return QueryResponse(
-                answer=local_resp.content,
-                routed_to="local",
-                confidence=0.5,
-                cost_usd=0.0,
-                learned=False,
-                latency_ms=latency,
-                gsa_p_yes=gsa_p_yes,
-            )
-
-        resp = self._escalate_to_cloud(
-            question, context, memory_hits, started, _emit,
-            escalated_on_refusal=refused,
+        state = RoutingState(
+            question=question,
+            context=context,
+            started=started,
+            emit=_emit,
         )
-        resp.gsa_p_yes = gsa_p_yes
-        return resp
+        return run_pipeline(self._query_stages, state)
 
     def correct(
         self,
@@ -434,22 +399,16 @@ class Agent:
             if on_progress is not None:
                 on_progress(event)
 
-        # Invalidate the closest memory entry for this question.
-        if self._embed_client:
-            q_emb = self._embed_client.embed(question)
-            hits = self.memory.search(q_emb, limit=1, min_similarity=0.80)
-            for h in hits:
-                self.memory.invalidate(h.entry.id)
-                logger.info("Invalidated memory entry %s for correction", h.entry.id)
+        if getattr(self, "_correct_stages", None) is None:
+            self._build_default_stages()
 
-        if self._cloud_client is None:
-            return QueryResponse(
-                answer="No cloud model configured — cannot re-verify.",
-                routed_to="local", confidence=0.0, cost_usd=0.0,
-                learned=False, latency_ms=_elapsed_ms(started),
-            )
-
-        return self._escalate_to_cloud(question, None, [], started, _emit)
+        state = RoutingState(
+            question=question,
+            context=None,
+            started=started,
+            emit=_emit,
+        )
+        return run_pipeline(self._correct_stages, state)
 
     def savings(self) -> SavingsReport:
         """Return cumulative cost savings across all sessions (R6 AC2).
