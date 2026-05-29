@@ -57,7 +57,7 @@ class TestBedrockThrottleRetry:
 
         fake_client = MagicMock()
         fake_client.converse.side_effect = fake_converse
-        monkeypatch.setattr(bedrock_client, "_get_bedrock_client", lambda: fake_client)
+        monkeypatch.setattr(bedrock_client._backend, "_get_client", lambda: fake_client)
 
         # Also stub out time.sleep so the test doesn't actually wait 1+2 seconds.
         monkeypatch.setattr("autodidact.llm_client.time.sleep", lambda _s: None)
@@ -82,7 +82,7 @@ class TestBedrockThrottleRetry:
 
         fake_client = MagicMock()
         fake_client.converse.side_effect = fake_converse
-        monkeypatch.setattr(bedrock_client, "_get_bedrock_client", lambda: fake_client)
+        monkeypatch.setattr(bedrock_client._backend, "_get_client", lambda: fake_client)
         monkeypatch.setattr("autodidact.llm_client.time.sleep", lambda _s: None)
 
         from autodidact.llm_client import ChatMessage
@@ -100,7 +100,7 @@ class TestBedrockThrottleRetry:
 
         fake_client = MagicMock()
         fake_client.converse.side_effect = fake_converse
-        monkeypatch.setattr(bedrock_client, "_get_bedrock_client", lambda: fake_client)
+        monkeypatch.setattr(bedrock_client._backend, "_get_client", lambda: fake_client)
         monkeypatch.setattr("autodidact.llm_client.time.sleep", lambda _s: None)
 
         from autodidact.llm_client import ChatMessage
@@ -118,7 +118,7 @@ class TestBedrockThrottleRetry:
 
         fake_client = MagicMock()
         fake_client.converse.side_effect = fake_converse
-        monkeypatch.setattr(bedrock_client, "_get_bedrock_client", lambda: fake_client)
+        monkeypatch.setattr(bedrock_client._backend, "_get_client", lambda: fake_client)
         monkeypatch.setattr("autodidact.llm_client.time.sleep", lambda _s: None)
 
         from autodidact.llm_client import ChatMessage
