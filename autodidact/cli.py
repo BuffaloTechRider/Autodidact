@@ -85,13 +85,19 @@ def _main(ctx: typer.Context) -> None:
 
 
 def _load_config(path: Path) -> dict:
-    """Load config YAML, with env var overrides."""
+    """Load config YAML, with env var overrides.
+
+    Kept as a thin shim over ``AgentConfig.from_yaml`` for tests that work
+    with raw config dicts. Production code should use
+    ``AgentConfig.from_yaml(path).build_agent()`` directly.
+    """
     if not path.exists():
         return {}
     with open(path) as f:
         config = yaml.safe_load(f) or {}
 
-    # Env var overrides (R8 AC3).
+    # Env var overrides (R8 AC3). Mirrors AgentConfig._resolve_api_keys
+    # for the dict-shaped path.
     import os
 
     if os.environ.get("OPENAI_API_KEY"):
@@ -103,95 +109,35 @@ def _load_config(path: Path) -> dict:
 
 
 def _agent_from_config(config: dict) -> Agent:
-    """Create an Agent from a config dict.
+    """Build an Agent from a YAML-shaped dict.
 
-    Handles three modes:
-    - local+cloud: local.model is bare (e.g. 'qwen2.5:7b') → Ollama.
-    - cloud+cloud: local.provider is set (e.g. 'openai') → cheap cloud in local slot.
-    - local-only: no 'cloud' section.
+    Pure shim over ``AgentConfig`` for tests and back-compat. New code
+    should call ``AgentConfig.from_yaml(path).build_agent()``.
+
+    Empty dict ⇒ no-op Agent (no models configured). Used by the CLI
+    fallback when no config file exists; downstream logic prints a helpful
+    "run autodidact init" message.
     """
-    import os
+    from autodidact.config import AgentConfig
 
-    local_cfg = config.get("local", {})
-    cloud_cfg = config.get("cloud", {})
+    if not config or not config.get("local"):
+        # Old behaviour: return a no-op Agent so the CLI can render its
+        # own "no model configured" guidance instead of a Pydantic stack.
+        return Agent()
 
-    # ── "Local" slot (may be Ollama or a cheap cloud in cloud+cloud mode) ─
-    local_provider = local_cfg.get("provider")  # set only in cloud+cloud mode
-    local_model_name = local_cfg.get("model")
-    local_model: Optional[str] = None
-    local_base_url: Optional[str] = None
-    local_api_key_env: Optional[str] = None
-    local_bedrock: Optional[dict] = None
+    # Empty cloud section ⇒ local-only.
+    if isinstance(config.get("cloud"), dict) and not config["cloud"]:
+        config = {**config}
+        del config["cloud"]
 
-    if local_model_name:
-        if local_provider and local_provider != "ollama":
-            # Cloud+cloud: cheap cloud model in the local slot.
-            local_model = f"{local_provider}/{local_model_name}"
-            local_base_url = local_cfg.get("base_url")
-            preset = get_cloud_preset(local_provider)
-            local_api_key_env = preset.get("api_key_env") or "OPENAI_API_KEY"
-            # If config embeds an API key, export it into the env var the
-            # LLMClient reads from.
-            local_api_key = local_cfg.get("api_key")
-            if local_api_key and local_api_key_env:
-                os.environ.setdefault(local_api_key_env, local_api_key)
-            # Bedrock uses its own auth config, not a generic API key.
-            if local_provider == "bedrock":
-                local_bedrock = local_cfg.get("bedrock")
-        else:
-            # Local+cloud or local-only: Ollama.
-            local_model = f"ollama/{local_model_name}"
+    cfg = AgentConfig.model_validate(config)
+    cfg._resolve_api_keys()
+    cfg._validate_api_keys_present()
+    agent = cfg.build_agent()
 
-    # ── Cloud slot ─────────────────────────────────────────────────
-    cloud_provider = cloud_cfg.get("provider", "openai")
-    cloud_model_name = cloud_cfg.get("model")
-    cloud_model: Optional[str] = None
-    cloud_base_url: Optional[str] = None
-    cloud_api_key_env: Optional[str] = None
-    cloud_bedrock: Optional[dict] = None
-
-    if cloud_model_name:
-        cloud_model = f"{cloud_provider}/{cloud_model_name}"
-        preset = get_cloud_preset(cloud_provider)
-        cloud_base_url = cloud_cfg.get("base_url") or preset.get("base_url")
-        cloud_api_key_env = preset.get("api_key_env") or "OPENAI_API_KEY"
-        cloud_api_key = cloud_cfg.get("api_key")
-        if cloud_api_key and cloud_api_key_env:
-            os.environ.setdefault(cloud_api_key_env, cloud_api_key)
-        if cloud_provider == "bedrock":
-            cloud_bedrock = cloud_cfg.get("bedrock")
-
-    # ── Common ─────────────────────────────────────────────────────
-    embedding_model = local_cfg.get("embedding_model")
-    db_path = config.get("memory", {}).get("path", "~/.autodidact/memory.db")
-    threshold = config.get("routing", {}).get("confidence_threshold", 0.7)
-
-    kwargs: dict = dict(
-        local_model=local_model,
-        cloud_model=cloud_model,
-        cloud_provider=cloud_provider,
-        db_path=db_path,
-        confidence_threshold=threshold,
-    )
-    if embedding_model:
-        kwargs["embedding_model"] = embedding_model
-    if local_base_url:
-        kwargs["local_base_url"] = local_base_url
-    if local_api_key_env:
-        kwargs["local_api_key_env"] = local_api_key_env
-    if local_bedrock:
-        kwargs["local_bedrock"] = local_bedrock
-    if cloud_base_url:
-        kwargs["cloud_base_url"] = cloud_base_url
-    if cloud_api_key_env:
-        kwargs["cloud_api_key_env"] = cloud_api_key_env
-    if cloud_bedrock:
-        kwargs["cloud_bedrock"] = cloud_bedrock
-
-    agent = Agent(**kwargs)
-
-    # Attach a DocumentStore so ingested docs are retrieved alongside memory (R9).
-    # Also wire in KnowledgeStore + LLM client for document synthesis.
+    # Attach a DocumentStore so ingested docs are retrieved alongside
+    # memory (R9). Also wire in KnowledgeStore + LLM client for document
+    # synthesis.
     if agent._embed_client is not None:
         from autodidact.document_store import DocumentStore
 
@@ -203,7 +149,6 @@ def _agent_from_config(config: dict) -> Agent:
             knowledge_store=agent.memory,
             extractor_client=extractor_client,
         ))
-
     return agent
 
 

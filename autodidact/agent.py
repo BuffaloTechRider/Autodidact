@@ -20,11 +20,12 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, TYPE_CHECKING
 
 import numpy as np
 
@@ -139,96 +140,152 @@ class Agent:
         gsa_enabled: bool = True,
         gsa_threshold: float = 0.55,
     ) -> None:
+        """Construct an Agent from kwargs (legacy / programmatic surface).
+
+        For YAML-based construction prefer ``AgentConfig.from_yaml(path).build_agent()``,
+        which validates the config strictly. This kwarg form is the
+        programmatic shim — it builds the same internal state but doesn't
+        enforce strict validation, since trusted callers (tests, libraries)
+        own their own correctness.
+
+        Empty kwargs (no models) ⇒ a no-op Agent (memory + DB only). Useful
+        for tests that wire models in afterwards via private attributes.
+        """
+        # Always init the shared state first so a no-op Agent is still
+        # usable for tests that bypass model config.
+        self._init_state(
+            confidence_threshold=confidence_threshold,
+            staleness_days=staleness_days,
+            gsa_enabled=gsa_enabled,
+            gsa_threshold=gsa_threshold,
+            db_path=db_path,
+        )
+
+        # Build the local LLMClient, if any.
+        if local_model:
+            provider, model = _parse_model_string(local_model, default_provider="ollama")
+            self._local_client = LLMClient(_kwargs_to_llmconfig(
+                provider=provider,
+                model=model,
+                embedding_model=embedding_model,
+                base_url=local_base_url,
+                api_key_env=local_api_key_env,
+                region=local_region,
+                bedrock=local_bedrock,
+                is_local_slot=True,
+            ))
+            self._local_model_name = local_model
+
+        # Build the cloud LLMClient, if any.
+        if cloud_model:
+            provider, model = _parse_model_string(cloud_model, default_provider=cloud_provider)
+            self._cloud_client = LLMClient(_kwargs_to_llmconfig(
+                provider=provider,
+                model=model,
+                embedding_model=None,  # cloud slot doesn't own embeddings
+                base_url=cloud_base_url,
+                api_key_env=cloud_api_key_env,
+                region=cloud_region,
+                bedrock=cloud_bedrock,
+                is_local_slot=False,
+            ))
+            self._cloud_model_name = cloud_model
+
+        self._embed_client = self._local_client or self._cloud_client
+        self._build_default_stages()
+
+    @classmethod
+    def _from_config(cls, cfg: "AgentConfig") -> "Agent":
+        """Construct an Agent from a strict AgentConfig.
+
+        Used by ``AgentConfig.build_agent()``. The kwarg ``__init__`` above
+        is the loose programmatic shim. Both end up with the same internal
+        state via ``_init_state`` and shared LLMConfig translation helpers.
+        """
+        from autodidact.config import apply_bedrock_auth_to_llm_kwargs
+
+        agent = cls.__new__(cls)
+        agent._init_state(
+            confidence_threshold=cfg.routing.confidence_threshold,
+            staleness_days=cfg.routing.staleness_days,
+            gsa_enabled=cfg.gsa.enabled,
+            gsa_threshold=cfg.gsa.threshold,
+            db_path=cfg.memory.path,
+        )
+
+        # Local slot.
+        local = cfg.local
+        provider = local.provider or "ollama"
+        local_kwargs: dict = {
+            "provider": "openai" if provider in _OPENAI_COMPAT_PROVIDERS else provider,
+            "model": local.model,
+            "embedding_model": _normalize_embedding_model(local.embedding_model),
+        }
+        if provider in _OPENAI_COMPAT_PROVIDERS:
+            local_kwargs["base_url"] = local.base_url or "https://api.openai.com/v1"
+            local_kwargs["api_key_env"] = local.api_key_env or "OPENAI_API_KEY"
+            if local.api_key and local_kwargs["api_key_env"]:
+                os.environ.setdefault(local_kwargs["api_key_env"], local.api_key)
+        elif provider == "bedrock" and local.bedrock is not None:
+            apply_bedrock_auth_to_llm_kwargs(local_kwargs, local.bedrock)
+        agent._local_client = LLMClient(LLMConfig(**local_kwargs))
+        agent._local_model_name = (
+            f"{provider}/{local.model}" if provider != "ollama" else local.model
+        )
+
+        # Cloud slot.
+        if cfg.cloud is not None:
+            cloud = cfg.cloud
+            cloud_kwargs: dict = {
+                "provider": "openai" if cloud.provider in _OPENAI_COMPAT_PROVIDERS else cloud.provider,
+                "model": cloud.model,
+            }
+            if cloud.provider in _OPENAI_COMPAT_PROVIDERS:
+                cloud_kwargs["base_url"] = cloud.base_url or "https://api.openai.com/v1"
+                cloud_kwargs["api_key_env"] = cloud.api_key_env or "OPENAI_API_KEY"
+                if cloud.api_key and cloud_kwargs["api_key_env"]:
+                    os.environ.setdefault(cloud_kwargs["api_key_env"], cloud.api_key)
+            elif cloud.provider == "bedrock" and cloud.bedrock is not None:
+                apply_bedrock_auth_to_llm_kwargs(cloud_kwargs, cloud.bedrock)
+            agent._cloud_client = LLMClient(LLMConfig(**cloud_kwargs))
+            agent._cloud_model_name = f"{cloud.provider}/{cloud.model}"
+
+        agent._embed_client = agent._local_client or agent._cloud_client
+        agent._build_default_stages()
+        return agent
+
+    def _init_state(
+        self,
+        *,
+        confidence_threshold: float,
+        staleness_days: float,
+        gsa_enabled: bool,
+        gsa_threshold: float,
+        db_path: str,
+    ) -> None:
+        """Common state initialization shared by __init__ and _from_config."""
         self.confidence_threshold = confidence_threshold
         self.staleness_days = staleness_days
         self.gsa_enabled = gsa_enabled
         self.gsa_threshold = gsa_threshold
 
-        # Expand ~ in db_path and ensure parent dir exists.
         self._db_path = str(Path(db_path).expanduser())
         Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
-
-        # Initialize database and knowledge store.
         self._conn = init_database(self._db_path)
         self._config = AutodidactConfig(db_path=self._db_path)
         self.memory = KnowledgeStore(self._conn, self._config)
 
-        # "Local" model client — normally Ollama, but can be any provider for
-        # cloud-to-cloud mode (cheap cloud model in the local slot, expensive
-        # in the cloud slot).
         self._local_client: Optional[LLMClient] = None
-        self._local_model_name = local_model
-        if local_model:
-            # Parse "ollama/qwen2.5:7b" → provider="ollama", model="qwen2.5:7b".
-            # "openai/gpt-4o-mini" → provider="openai", model="gpt-4o-mini".
-            provider, model = _parse_model_string(local_model, default_provider="ollama")
-            emb_model = embedding_model or "qllama/bge-large-en-v1.5"
-            # Strip ONLY known provider prefixes (ollama/, openai/, bedrock/) —
-            # not arbitrary namespaces. Ollama models commonly live under
-            # third-party namespaces like 'qllama/bge-large-en-v1.5' or
-            # 'hf.co/bartowski/Llama-3.2-1B-Instruct-GGUF' where the slash is
-            # part of the model's identity. Stripping those breaks embedding
-            # lookups (Ollama 404s on the bare name).
-            if "/" in emb_model:
-                first_segment, rest = emb_model.split("/", 1)
-                if first_segment.lower() in ("ollama", "openai", "bedrock"):
-                    emb_model = rest
-            local_config_kwargs: dict = {
-                "provider": provider,
-                "model": model,
-                "embedding_model": emb_model,
-            }
-            # Wire provider-specific settings when the "local" slot isn't Ollama.
-            if provider == "openai":
-                local_config_kwargs["base_url"] = local_base_url or "https://api.openai.com/v1"
-                local_config_kwargs["api_key_env"] = local_api_key_env or "OPENAI_API_KEY"
-            elif provider == "bedrock":
-                local_config_kwargs["region"] = local_region
-                if local_bedrock:
-                    _apply_bedrock_auth(local_config_kwargs, local_bedrock)
-            self._local_client = LLMClient(LLMConfig(**local_config_kwargs))
-
-        # Cloud model client.
         self._cloud_client: Optional[LLMClient] = None
-        self._cloud_model_name = cloud_model
-        if cloud_model:
-            provider, model = _parse_model_string(cloud_model, default_provider=cloud_provider)
-            config_kwargs: dict = {"provider": provider, "model": model}
-            if provider == "openai":
-                config_kwargs["base_url"] = cloud_base_url or "https://api.openai.com/v1"
-                config_kwargs["api_key_env"] = cloud_api_key_env or "OPENAI_API_KEY"
-            elif provider == "bedrock":
-                config_kwargs["region"] = cloud_region
-                if cloud_bedrock:
-                    _apply_bedrock_auth(config_kwargs, cloud_bedrock)
-            self._cloud_client = LLMClient(LLMConfig(**config_kwargs))
-
-        # Embedding client — reuse local client if available, else cloud.
-        self._embed_client = self._local_client or self._cloud_client
-
-        # Session stats.
+        self._embed_client: Optional[LLMClient] = None
+        self._local_model_name: Optional[str] = None
+        self._cloud_model_name: Optional[str] = None
         self._session_stats = SavingsReport()
-
-        # Conversation history (in-session only).
-        self._history: list[dict] = []  # [{"role": "user"/"assistant", "content": "..."}]
-
-        # Document store for ingested source materials (R9). Separate from
-        # agent memory per AD-002. None unless attached via attach_document_store()
-        # or set by the caller directly. Retrieved alongside memory at query
-        # time with different prompt framing.
+        self._history: list[dict] = []
         self.documents: Optional[DocumentStore] = None
-
-        # GSA (grounded self-assessment) probe — runs before local generation
-        # when enabled. Built lazily on first use so tests can patch it.
         self._gsa: Optional[SelfAssessment] = None
-
-        # Routing pipelines — list of RoutingStage callables. Built lazily
-        # so tests that bypass __init__ via Agent.__new__ still get default
-        # stages on the first query/correct call. Tests can preempt by
-        # setting _query_stages / _correct_stages directly.
         self._query_stages: Optional[list] = None
         self._correct_stages: Optional[list] = None
-        self._build_default_stages()
 
     # ── Public API ────────────────────────────────────────────────
 
@@ -864,6 +921,58 @@ _OPENAI_COMPAT_PROVIDERS = frozenset({
     "openai", "google", "openrouter", "deepseek", "mistral",
     "groq", "together", "fireworks", "xai",
 })
+
+
+def _normalize_embedding_model(name: Optional[str]) -> Optional[str]:
+    """Strip a known provider prefix from an embedding model name.
+
+    Ollama models commonly live under third-party namespaces like
+    ``qllama/bge-large-en-v1.5`` or ``hf.co/bartowski/...`` where the
+    slash is part of the model's identity. Strip ONLY known provider
+    prefixes (``ollama/``, ``openai/``, ``bedrock/``), not arbitrary
+    namespaces.
+
+    Returns the default ``qllama/bge-large-en-v1.5`` when name is None.
+    """
+    name = name or "qllama/bge-large-en-v1.5"
+    if "/" in name:
+        first, rest = name.split("/", 1)
+        if first.lower() in ("ollama", "openai", "bedrock"):
+            return rest
+    return name
+
+
+def _kwargs_to_llmconfig(
+    *,
+    provider: str,
+    model: str,
+    embedding_model: Optional[str],
+    base_url: Optional[str],
+    api_key_env: Optional[str],
+    region: str,
+    bedrock: Optional[dict],
+    is_local_slot: bool,
+) -> LLMConfig:
+    """Translate kwarg-style construction into an LLMConfig.
+
+    Used by ``Agent.__init__`` (the loose programmatic shim). The strict
+    YAML path uses ``Agent._from_config`` directly with an AgentConfig,
+    which performs equivalent translation but with typed inputs.
+    """
+    kwargs: dict = {
+        "provider": provider,
+        "model": model,
+    }
+    if is_local_slot:
+        kwargs["embedding_model"] = _normalize_embedding_model(embedding_model)
+    if provider == "openai":
+        kwargs["base_url"] = base_url or "https://api.openai.com/v1"
+        kwargs["api_key_env"] = api_key_env or "OPENAI_API_KEY"
+    elif provider == "bedrock":
+        kwargs["region"] = region
+        if bedrock:
+            _apply_bedrock_auth(kwargs, bedrock)
+    return LLMConfig(**kwargs)
 
 
 def _parse_model_string(model_str: str, default_provider: str = "ollama") -> tuple[str, str]:
