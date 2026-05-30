@@ -1,5 +1,5 @@
 # 🧠 Autodidact (v1.0.x)
-** A local-first, self-evolving AI agent framework that slashes cloud API costs by distilling knowledge onto the edge.
+** A local-first, self-evolving AI agent framework that slashes cloud API costs by distilling knowledge onto the edge.**
 
 Autodidact is an AI agent with a local brain that works like a human. When asked a question or given a task, it thinks first and evaluates whether the local brain can handle it. If yes, it executes. If not, it escalates - by searching Google or asking someone smarter (a more powerful cloud model) - just like how humans work. After the escalation, it learns the new knowledge, skills, or tool usages so next time it won't have to ask similar questions again.
 
