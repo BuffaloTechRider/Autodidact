@@ -86,7 +86,7 @@ class TestDiscoverBedrockModelsHappyPath:
             ],
         )
 
-        with patch("autodidact.setup_wizard._import_boto3", return_value=_FakeBoto3(client)):
+        with patch("autodidact.setup_wizard.discovery._import_boto3", return_value=_FakeBoto3(client)):
             ids = discover_bedrock_models(region="us-west-2", auth_mode="default")
 
         # On-demand models surface as bare IDs.
@@ -115,7 +115,7 @@ class TestDiscoverBedrockModelsHappyPath:
             ],
         )
 
-        with patch("autodidact.setup_wizard._import_boto3", return_value=_FakeBoto3(client)):
+        with patch("autodidact.setup_wizard.discovery._import_boto3", return_value=_FakeBoto3(client)):
             ids = discover_bedrock_models(region="eu-west-1", auth_mode="default")
 
         assert "eu.anthropic.claude-3-5-sonnet-20240620-v1:0" in ids
@@ -137,7 +137,7 @@ class TestDiscoverBedrockModelsHappyPath:
             ],
         )
 
-        with patch("autodidact.setup_wizard._import_boto3", return_value=_FakeBoto3(client)):
+        with patch("autodidact.setup_wizard.discovery._import_boto3", return_value=_FakeBoto3(client)):
             ids = discover_bedrock_models(region="ap-northeast-1", auth_mode="default")
 
         assert "apac.anthropic.claude-3-5-sonnet-20240620-v1:0" in ids
@@ -167,7 +167,7 @@ class TestDiscoverBedrockModelsHappyPath:
             ],
         )
 
-        with patch("autodidact.setup_wizard._import_boto3", return_value=_FakeBoto3(client)):
+        with patch("autodidact.setup_wizard.discovery._import_boto3", return_value=_FakeBoto3(client)):
             ids = discover_bedrock_models(region="us-west-2", auth_mode="default")
 
         assert "anthropic.claude-instant-v1" not in ids
@@ -195,7 +195,7 @@ class TestDiscoverBedrockModelsHappyPath:
             inference_profiles=[],
         )
 
-        with patch("autodidact.setup_wizard._import_boto3", return_value=_FakeBoto3(client)):
+        with patch("autodidact.setup_wizard.discovery._import_boto3", return_value=_FakeBoto3(client)):
             ids = discover_bedrock_models(region="us-west-2", auth_mode="default")
 
         assert "amazon.titan-image-generator-v2:0" not in ids
@@ -225,7 +225,7 @@ class TestDiscoverBedrockModelsHappyPath:
             ],
         )
 
-        with patch("autodidact.setup_wizard._import_boto3", return_value=_FakeBoto3(client)):
+        with patch("autodidact.setup_wizard.discovery._import_boto3", return_value=_FakeBoto3(client)):
             ids = discover_bedrock_models(region="us-west-2", auth_mode="default")
 
         assert ids == sorted(set(ids))
@@ -243,7 +243,7 @@ class TestDiscoverBedrockModelsErrors:
             discover_bedrock_models,
         )
 
-        with patch("autodidact.setup_wizard._import_boto3",
+        with patch("autodidact.setup_wizard.discovery._import_boto3",
                    side_effect=ImportError("boto3 not installed")):
             with pytest.raises(BedrockDiscoveryError) as exc:
                 discover_bedrock_models(region="us-west-2", auth_mode="default")
@@ -260,7 +260,7 @@ class TestDiscoverBedrockModelsErrors:
             "AccessDeniedException: not authorized to call ListFoundationModels"
         )
 
-        with patch("autodidact.setup_wizard._import_boto3",
+        with patch("autodidact.setup_wizard.discovery._import_boto3",
                    return_value=_FakeBoto3(client)):
             with pytest.raises(BedrockDiscoveryError) as exc:
                 discover_bedrock_models(region="us-west-2", auth_mode="default")

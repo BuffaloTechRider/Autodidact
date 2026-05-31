@@ -78,7 +78,7 @@ def test_wizard_with_no_ollama_installed_does_not_invoke_real_installer(
         from unittest.mock import MagicMock
         return MagicMock(returncode=0)
 
-    monkeypatch.setattr("autodidact.setup_wizard.subprocess.run", tripwire)
+    monkeypatch.setattr("autodidact.setup_wizard.ollama.subprocess.run", tripwire)
 
     runner = CliRunner()
     cfg = tmp_path / "config.yaml"

@@ -62,7 +62,7 @@ class TestDiscoverOpenRouterModels:
         }
 
         with patch(
-            "autodidact.setup_wizard.requests.get",
+            "autodidact.setup_wizard.discovery.requests.get",
             return_value=_FakeResponse(payload),
         ):
             entries = discover_openrouter_models()
@@ -88,7 +88,7 @@ class TestDiscoverOpenRouterModels:
         }
 
         with patch(
-            "autodidact.setup_wizard.requests.get",
+            "autodidact.setup_wizard.discovery.requests.get",
             return_value=_FakeResponse(payload),
         ):
             ids = [e.id for e in discover_openrouter_models()]
@@ -111,7 +111,7 @@ class TestDiscoverOpenRouterModels:
         }
 
         with patch(
-            "autodidact.setup_wizard.requests.get",
+            "autodidact.setup_wizard.discovery.requests.get",
             return_value=_FakeResponse(payload),
         ):
             ids = [e.id for e in discover_openrouter_models()]
@@ -132,7 +132,7 @@ class TestDiscoverOpenRouterModels:
         }
 
         with patch(
-            "autodidact.setup_wizard.requests.get",
+            "autodidact.setup_wizard.discovery.requests.get",
             return_value=_FakeResponse(payload),
         ):
             ids = [e.id for e in discover_openrouter_models()]
@@ -149,7 +149,7 @@ class TestDiscoverOpenRouterModels:
         from requests.exceptions import RequestException
 
         with patch(
-            "autodidact.setup_wizard.requests.get",
+            "autodidact.setup_wizard.discovery.requests.get",
             side_effect=RequestException("connection refused"),
         ):
             with pytest.raises(OpenRouterDiscoveryError) as exc:
@@ -163,7 +163,7 @@ class TestDiscoverOpenRouterModels:
         )
 
         with patch(
-            "autodidact.setup_wizard.requests.get",
+            "autodidact.setup_wizard.discovery.requests.get",
             return_value=_FakeResponse({"error": "nope"}, status_code=503),
         ):
             with pytest.raises(OpenRouterDiscoveryError):

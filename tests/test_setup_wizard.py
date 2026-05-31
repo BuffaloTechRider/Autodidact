@@ -63,7 +63,7 @@ class TestModelDetection:
         models = list_ollama_models()
         assert models == []
 
-    @patch("autodidact.setup_wizard.requests.post")
+    @patch("autodidact.setup_wizard.ollama.requests.post")
     def test_checks_specific_model(self, mock_post):
         """is_model_available now asks Ollama via /api/show.
 
