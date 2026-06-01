@@ -32,8 +32,8 @@ class TestCustomProviderEntry:
     """User can enter a custom provider name via the 'Other' option."""
 
     @patch("autodidact.cli._run_smoke_test")
-    @patch("autodidact.cli.detect_ollama")
-    @patch("autodidact.cli.is_model_available", return_value=True)
+    @patch("autodidact.setup_wizard.flow.detect_ollama")
+    @patch("autodidact.setup_wizard.flow.is_model_available", return_value=True)
     @patch("autodidact.cli.detect_hardware")
     def test_custom_provider_via_other(
         self, mock_hw, mock_model, mock_detect, mock_smoke, tmp_path
@@ -64,8 +64,8 @@ class TestCustomModelEntry:
     """User can enter a custom model name via the 'Other' option."""
 
     @patch("autodidact.cli._run_smoke_test")
-    @patch("autodidact.cli.detect_ollama")
-    @patch("autodidact.cli.is_model_available", return_value=True)
+    @patch("autodidact.setup_wizard.flow.detect_ollama")
+    @patch("autodidact.setup_wizard.flow.is_model_available", return_value=True)
     @patch("autodidact.cli.detect_hardware")
     def test_custom_model_via_other(
         self, mock_hw, mock_model, mock_detect, mock_smoke, tmp_path
@@ -97,19 +97,27 @@ class TestSmokeTestDiagnostics:
 
     def _render_and_capture(self, exc: Exception, config: dict) -> str:
         """Call _render_smoke_test_error and return captured console output."""
-        from autodidact.cli import console
         from io import StringIO
+
         from rich.console import Console
 
         buf = StringIO()
+        # _render_smoke_test_error lives in setup_wizard/smoke.py and writes
+        # to setup_wizard._console.console. Swap that one for capture.
+        import autodidact.setup_wizard._console as console_mod
+        original = console_mod.console
         try:
-            new_console = Console(file=buf, force_terminal=False)
-            import autodidact.cli as cli_mod
-            cli_mod.console = new_console
+            console_mod.console = Console(file=buf, force_terminal=False)
+            # The smoke module imports `console` directly into its
+            # namespace, so we also need to swap the module-local binding.
+            import autodidact.setup_wizard.smoke as smoke_mod
+            smoke_mod.console = console_mod.console
             _render_smoke_test_error(exc, config)
             return buf.getvalue()
         finally:
-            cli_mod.console = Console()
+            console_mod.console = original
+            import autodidact.setup_wizard.smoke as smoke_mod
+            smoke_mod.console = original
 
     def test_ollama_not_running_gets_hint(self):
         err = Exception("Connection refused to Ollama at http://localhost:11434")

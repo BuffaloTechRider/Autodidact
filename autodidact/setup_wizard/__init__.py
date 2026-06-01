@@ -6,16 +6,15 @@ Handles four setup modes:
 - local_local: small Ollama model + bigger Ollama model
 - local_only: Ollama local model, no cloud
 
-The library-level helpers (no UI) are organized by concern:
+The package is organized by concern:
   - ollama.py    — Ollama detection, install, daemon, model pull/verify
   - presets.py   — _CLOUD_PRESETS registry + accessors
   - discovery.py — Bedrock + OpenRouter live model discovery
   - builder.py   — build_config (the YAML emit)
-
-The interactive wizard prompts (typer.prompt + rich Console + questionary
-pickers) live in autodidact/cli.py. They're tightly coupled to the
-chat-side TUI utilities there; pulling them out yielded little benefit
-relative to the test-fixture churn cost.
+  - picker.py    — _pick_from_list, questionary detection
+  - prompts.py   — interactive prompt flows for cloud providers
+  - flow.py      — _init_with_ollama / _init_cloud_to_cloud / _init_custom_server
+  - smoke.py     — _run_smoke_test, _render_smoke_test_error
 
 Public re-exports below preserve every name that callers used when this
 was a single ``setup_wizard.py`` file. ``from autodidact.setup_wizard

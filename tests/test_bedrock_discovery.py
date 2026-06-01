@@ -276,11 +276,12 @@ class TestPromptBedrockUsesDiscovery:
 
     def test_picker_uses_discovered_ids_when_discovery_succeeds(self, monkeypatch):
         from autodidact import cli
+        from autodidact.setup_wizard import prompts as prompts_module
 
         prompts = iter([
             "us-west-2",            # region
         ])
-        monkeypatch.setattr(cli.typer, "prompt", lambda *a, **k: next(prompts))
+        monkeypatch.setattr(prompts_module.typer, "prompt", lambda *a, **k: next(prompts))
 
         captured: dict = {}
         pick_calls = iter([
@@ -297,9 +298,9 @@ class TestPromptBedrockUsesDiscovery:
             captured["default"] = default
             return choices[0]
 
-        monkeypatch.setattr(cli, "_pick_from_list", fake_pick)
+        monkeypatch.setattr(prompts_module, "_pick_from_list", fake_pick)
         monkeypatch.setattr(
-            cli,
+            prompts_module,
             "discover_bedrock_models",
             lambda **kwargs: [
                 "anthropic.claude-3-5-haiku-20241022-v1:0",
@@ -317,24 +318,25 @@ class TestPromptBedrockUsesDiscovery:
 
     def test_falls_back_to_fallback_list_when_discovery_fails(self, monkeypatch):
         from autodidact import cli
+        from autodidact.setup_wizard import prompts as prompts_module
         from autodidact.setup_wizard import BedrockDiscoveryError
 
         prompts = iter([
             "us-west-2",                                          # region
         ])
-        monkeypatch.setattr(cli.typer, "prompt", lambda *a, **k: next(prompts))
+        monkeypatch.setattr(prompts_module.typer, "prompt", lambda *a, **k: next(prompts))
 
         # _pick_from_list returns the first auth choice then a fallback model.
         picks = iter([
             "IAM Role / default credential chain (env vars, ~/.aws/credentials, SSO, IMDS)",
             "us.anthropic.claude-haiku-4-20250514-v1:0",
         ])
-        monkeypatch.setattr(cli, "_pick_from_list", lambda *a, **k: next(picks))
+        monkeypatch.setattr(prompts_module, "_pick_from_list", lambda *a, **k: next(picks))
 
         def boom(**kwargs):
             raise BedrockDiscoveryError("AccessDeniedException")
 
-        monkeypatch.setattr(cli, "discover_bedrock_models", boom)
+        monkeypatch.setattr(prompts_module, "discover_bedrock_models", boom)
 
         result = cli._prompt_bedrock_config(preset={"models": [], "default_cheap": ""}, slot="cheap")
         assert result["model"] == "us.anthropic.claude-haiku-4-20250514-v1:0"

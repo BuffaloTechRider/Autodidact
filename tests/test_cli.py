@@ -149,8 +149,8 @@ class TestInitCommand:
     """
 
     @patch("autodidact.cli._run_smoke_test")
-    @patch("autodidact.cli.detect_ollama")
-    @patch("autodidact.cli.is_model_available", return_value=True)
+    @patch("autodidact.setup_wizard.flow.detect_ollama")
+    @patch("autodidact.setup_wizard.flow.is_model_available", return_value=True)
     def test_init_creates_config_file(
         self, mock_model, mock_detect, mock_smoke, tmp_path
     ):
@@ -171,8 +171,8 @@ class TestInitCommand:
         assert config["local"]["model"] == "qwen2.5:7b"
 
     @patch("autodidact.cli._run_smoke_test")
-    @patch("autodidact.cli.detect_ollama")
-    @patch("autodidact.cli.is_model_available", return_value=True)
+    @patch("autodidact.setup_wizard.flow.detect_ollama")
+    @patch("autodidact.setup_wizard.flow.is_model_available", return_value=True)
     def test_init_with_cloud_provider(
         self, mock_model, mock_detect, mock_smoke, tmp_path
     ):
@@ -192,8 +192,8 @@ class TestInitCommand:
         assert config["cloud"]["provider"] == "openai"
 
     @patch("autodidact.cli._run_smoke_test")
-    @patch("autodidact.cli.detect_ollama")
-    @patch("autodidact.cli.is_model_available", return_value=True)
+    @patch("autodidact.setup_wizard.flow.detect_ollama")
+    @patch("autodidact.setup_wizard.flow.is_model_available", return_value=True)
     @patch("autodidact.cli.detect_hardware")
     def test_init_defaults(self, mock_hw, mock_model, mock_detect, mock_smoke, tmp_path):
         """All defaults: mode=1 (local+cloud), default model, default cloud."""
@@ -220,8 +220,8 @@ class TestInitCommand:
         assert "Ready" in result.output
 
     @patch("autodidact.cli._run_smoke_test")
-    @patch("autodidact.cli.detect_ollama")
-    @patch("autodidact.cli.is_model_available", return_value=True)
+    @patch("autodidact.setup_wizard.flow.detect_ollama")
+    @patch("autodidact.setup_wizard.flow.is_model_available", return_value=True)
     def test_init_writes_yaml_format(
         self, mock_model, mock_detect, mock_smoke, tmp_path
     ):

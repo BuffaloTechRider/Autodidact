@@ -179,6 +179,7 @@ class TestPromptOpenRouterUsesBrowse:
 
     def test_preset_picker_includes_browse_choice(self, monkeypatch):
         from autodidact import cli
+        from autodidact.setup_wizard import prompts as prompts_module
 
         captured: dict = {}
 
@@ -186,8 +187,8 @@ class TestPromptOpenRouterUsesBrowse:
             captured.setdefault("calls", []).append({"choices": choices, "default": default})
             return choices[0]  # pick first preset entry
 
-        monkeypatch.setattr(cli, "_pick_from_list", fake_pick)
-        monkeypatch.setattr(cli.typer, "prompt", lambda *a, **k: "sk-or-v1-test")
+        monkeypatch.setattr(prompts_module, "_pick_from_list", fake_pick)
+        monkeypatch.setattr(prompts_module.typer, "prompt", lambda *a, **k: "sk-or-v1-test")
 
         preset = {
             "models": ["openai/gpt-4o", "anthropic/claude-sonnet-4-5"],
@@ -208,6 +209,7 @@ class TestPromptOpenRouterUsesBrowse:
 
     def test_browse_choice_invokes_discovery_and_picks_from_full_list(self, monkeypatch):
         from autodidact import cli
+        from autodidact.setup_wizard import prompts as prompts_module
         from autodidact.setup_wizard import OpenRouterModel
 
         captured_choices: list[list[str]] = []
@@ -226,11 +228,11 @@ class TestPromptOpenRouterUsesBrowse:
                     return c
             return choices[0]
 
-        monkeypatch.setattr(cli, "_pick_from_list", fake_pick)
-        monkeypatch.setattr(cli.typer, "prompt", lambda *a, **k: "sk-or-v1-test")
+        monkeypatch.setattr(prompts_module, "_pick_from_list", fake_pick)
+        monkeypatch.setattr(prompts_module.typer, "prompt", lambda *a, **k: "sk-or-v1-test")
 
         monkeypatch.setattr(
-            cli,
+            prompts_module,
             "discover_openrouter_models",
             lambda: [
                 OpenRouterModel(
@@ -269,6 +271,7 @@ class TestPromptOpenRouterUsesBrowse:
 
     def test_browse_falls_back_to_free_form_when_discovery_fails(self, monkeypatch):
         from autodidact import cli
+        from autodidact.setup_wizard import prompts as prompts_module
         from autodidact.setup_wizard import OpenRouterDiscoveryError
 
         # Picker is called once (preset), then user picks Browse → discovery
@@ -280,16 +283,16 @@ class TestPromptOpenRouterUsesBrowse:
         ])
 
         monkeypatch.setattr(
-            cli,
+            prompts_module,
             "_pick_from_list",
             lambda *a, **k: next(picker_calls),
         )
-        monkeypatch.setattr(cli.typer, "prompt", lambda *a, **k: next(text_prompts))
+        monkeypatch.setattr(prompts_module.typer, "prompt", lambda *a, **k: next(text_prompts))
 
         def boom():
             raise OpenRouterDiscoveryError("503 from /v1/models")
 
-        monkeypatch.setattr(cli, "discover_openrouter_models", boom)
+        monkeypatch.setattr(prompts_module, "discover_openrouter_models", boom)
 
         preset = {
             "models": ["openai/gpt-4o"],
@@ -305,6 +308,7 @@ class TestPromptOpenRouterUsesBrowse:
     def test_non_openrouter_provider_unchanged(self, monkeypatch):
         """Other OpenAI-compat providers must not get the Browse choice or call discovery."""
         from autodidact import cli
+        from autodidact.setup_wizard import prompts as prompts_module
 
         captured: list[list[str]] = []
 
@@ -312,12 +316,12 @@ class TestPromptOpenRouterUsesBrowse:
             captured.append(list(choices))
             return choices[0]
 
-        monkeypatch.setattr(cli, "_pick_from_list", fake_pick)
-        monkeypatch.setattr(cli.typer, "prompt", lambda *a, **k: "sk-test")
+        monkeypatch.setattr(prompts_module, "_pick_from_list", fake_pick)
+        monkeypatch.setattr(prompts_module.typer, "prompt", lambda *a, **k: "sk-test")
 
         # If discovery is reached for non-openrouter, fail loudly.
         monkeypatch.setattr(
-            cli,
+            prompts_module,
             "discover_openrouter_models",
             lambda: pytest.fail("discover_openrouter_models must not be called for non-openrouter providers"),
         )
