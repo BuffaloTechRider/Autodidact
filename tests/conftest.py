@@ -38,6 +38,56 @@ def _block_real_system_side_effects(request, monkeypatch):
 
     # Block real system side effects across the rest of the suite. Returning
     # False / True here matches how the real functions signal failure / success.
+    #
+    # The wizard interactive prompts in autodidact.setup_wizard.flow import
+    # these helpers from autodidact.setup_wizard.ollama at module load time
+    # — patches must target the bindings IN flow.py (where they're called)
+    # AND in ollama.py (where the real implementation lives) for full
+    # safety coverage. Patching only the package-level alias would leave the
+    # real installer reachable via the flow.<name> binding.
+    monkeypatch.setattr(
+        "autodidact.setup_wizard.ollama.install_ollama",
+        lambda: False,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "autodidact.setup_wizard.flow.install_ollama",
+        lambda: False,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "autodidact.setup_wizard.ollama.start_ollama_daemon",
+        lambda *a, **k: False,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "autodidact.setup_wizard.flow.start_ollama_daemon",
+        lambda *a, **k: False,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "autodidact.setup_wizard.ollama.pull_ollama_model",
+        lambda *a, **k: (True, ""),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "autodidact.setup_wizard.flow.pull_ollama_model",
+        lambda *a, **k: (True, ""),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "autodidact.setup_wizard.ollama.is_ollama_running",
+        lambda: True,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "autodidact.setup_wizard.flow.is_ollama_running",
+        lambda: True,
+        raising=False,
+    )
+    # Also patch the package-level re-exports so direct
+    # ``from autodidact.setup_wizard import install_ollama`` callers are
+    # equally safe.
     monkeypatch.setattr(
         "autodidact.setup_wizard.install_ollama",
         lambda: False,
@@ -50,7 +100,7 @@ def _block_real_system_side_effects(request, monkeypatch):
     )
     monkeypatch.setattr(
         "autodidact.setup_wizard.pull_ollama_model",
-        lambda *a, **k: True,
+        lambda *a, **k: (True, ""),
         raising=False,
     )
     monkeypatch.setattr(

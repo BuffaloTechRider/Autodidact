@@ -42,8 +42,8 @@ class TestInitModeSelection:
     """R8 AC1: three modes — local+cloud, cloud+cloud, local-only."""
 
     @patch("autodidact.cli._run_smoke_test")
-    @patch("autodidact.cli.detect_ollama")
-    @patch("autodidact.cli.is_model_available", return_value=True)
+    @patch("autodidact.setup_wizard.flow.detect_ollama")
+    @patch("autodidact.setup_wizard.flow.is_model_available", return_value=True)
     def test_local_cloud_mode_produces_local_and_cloud_sections(
         self, mock_model, mock_detect, mock_smoke, tmp_path
     ):
@@ -79,8 +79,8 @@ class TestInitModeSelection:
         assert config["cloud"]["provider"] == "openai"
 
     @patch("autodidact.cli._run_smoke_test")
-    @patch("autodidact.cli.detect_ollama")
-    @patch("autodidact.cli.is_model_available", return_value=True)
+    @patch("autodidact.setup_wizard.flow.detect_ollama")
+    @patch("autodidact.setup_wizard.flow.is_model_available", return_value=True)
     def test_local_only_mode_omits_cloud_section(
         self, mock_model, mock_detect, mock_smoke, tmp_path
     ):
@@ -106,8 +106,8 @@ class TestOllamaAutoDetection:
     """R8 AC2: detect Ollama; offer install if missing; auto-pull models."""
 
     @patch("autodidact.cli._run_smoke_test")
-    @patch("autodidact.cli.detect_ollama")
-    @patch("autodidact.cli.is_model_available", return_value=True)
+    @patch("autodidact.setup_wizard.flow.detect_ollama")
+    @patch("autodidact.setup_wizard.flow.is_model_available", return_value=True)
     def test_detects_installed_ollama(
         self, mock_model, mock_detect, mock_smoke, tmp_path
     ):
@@ -125,8 +125,8 @@ class TestOllamaAutoDetection:
         assert "curl -fsSL" not in result.output
 
     @patch("autodidact.cli._run_smoke_test")
-    @patch("autodidact.cli.detect_ollama")
-    @patch("autodidact.cli.get_ollama_install_command", return_value="brew install ollama")
+    @patch("autodidact.setup_wizard.flow.detect_ollama")
+    @patch("autodidact.setup_wizard.flow.get_ollama_install_command", return_value="brew install ollama")
     def test_missing_ollama_shows_install_command(
         self, mock_cmd, mock_detect, mock_smoke, tmp_path
     ):
@@ -143,10 +143,10 @@ class TestOllamaAutoDetection:
         assert "brew install ollama" in result.output
 
     @patch("autodidact.cli._run_smoke_test")
-    @patch("autodidact.cli.detect_ollama")
-    @patch("autodidact.cli.verify_model_loadable", return_value=True)
-    @patch("autodidact.cli.is_model_available", return_value=False)
-    @patch("autodidact.cli.pull_ollama_model", return_value=(True, ""))
+    @patch("autodidact.setup_wizard.flow.detect_ollama")
+    @patch("autodidact.setup_wizard.flow.verify_model_loadable", return_value=True)
+    @patch("autodidact.setup_wizard.flow.is_model_available", return_value=False)
+    @patch("autodidact.setup_wizard.flow.pull_ollama_model", return_value=(True, ""))
     def test_missing_model_gets_pulled(
         self, mock_pull, mock_available, mock_verify, mock_detect, mock_smoke, tmp_path
     ):
@@ -167,10 +167,10 @@ class TestOllamaAutoDetection:
         assert mock_pull.call_count >= 1
 
     @patch("autodidact.cli._run_smoke_test")
-    @patch("autodidact.cli.detect_ollama")
-    @patch("autodidact.cli.verify_model_loadable", return_value=False)
-    @patch("autodidact.cli.is_model_available", return_value=False)
-    @patch("autodidact.cli.pull_ollama_model", return_value=(True, ""))
+    @patch("autodidact.setup_wizard.flow.detect_ollama")
+    @patch("autodidact.setup_wizard.flow.verify_model_loadable", return_value=False)
+    @patch("autodidact.setup_wizard.flow.is_model_available", return_value=False)
+    @patch("autodidact.setup_wizard.flow.pull_ollama_model", return_value=(True, ""))
     def test_cloud_only_pull_fails_verification_and_exits(
         self, mock_pull, mock_available, mock_verify, mock_detect, mock_smoke, tmp_path
     ):
@@ -230,8 +230,8 @@ class TestSmokeTest:
     """R8 AC7: smoke test on init."""
 
     @patch("autodidact.cli._run_smoke_test")
-    @patch("autodidact.cli.detect_ollama")
-    @patch("autodidact.cli.is_model_available", return_value=True)
+    @patch("autodidact.setup_wizard.flow.detect_ollama")
+    @patch("autodidact.setup_wizard.flow.is_model_available", return_value=True)
     def test_smoke_test_is_called(
         self, mock_model, mock_detect, mock_smoke, tmp_path
     ):
