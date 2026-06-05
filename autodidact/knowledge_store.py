@@ -6,9 +6,11 @@ cosine similarity search, STM/LTM tiers, and spaced-repetition decay.
 
 from __future__ import annotations
 
+import functools
 import json
 import math
 import sqlite3
+import threading
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -34,6 +36,23 @@ class ScoredKnowledgeEntry:
         self.score = score
 
 
+def _synchronized(method):
+    """Serialize a method on ``self.lock``.
+
+    The sqlite connection and FAISS index are shared with the background
+    ``_learn`` thread spawned on cloud escalation. CPython segfaults when one
+    sqlite3 connection is used from two threads at once, so every method that
+    touches the connection or the index must hold the lock.
+    """
+
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self.lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper
+
+
 class MixedEmbeddingDimensionError(ValueError):
     """Raised when the knowledge store contains embeddings of mixed dimensions.
 
@@ -56,6 +75,11 @@ class KnowledgeStore:
     def __init__(self, conn: sqlite3.Connection, config: AutodidactConfig) -> None:
         self.conn = conn
         self.config = config
+        # Reentrant so a @_synchronized public method can call another one
+        # (e.g. _faiss_search → get) without deadlocking. Shared with the Agent,
+        # which writes query_log on the same connection from the main thread
+        # while the background _learn thread writes here.
+        self.lock = threading.RLock()
         self._faiss_index: Optional[faiss.IndexFlatIP] = None
         self._faiss_ids: list[str] = []
         self._faiss_dirty = True
@@ -63,6 +87,7 @@ class KnowledgeStore:
         # Reset on _faiss_dirty to catch any out-of-band mutations.
         self._expected_dim: Optional[int] = None
 
+    @_synchronized
     def insert(self, entry: NewKnowledgeEntry) -> KnowledgeEntry:
         """Insert a new knowledge entry into STM."""
         now = datetime.now(timezone.utc).isoformat()
@@ -146,6 +171,7 @@ class KnowledgeStore:
             verbatim_response=entry.verbatim_response,
         )
 
+    @_synchronized
     def insert_batch(self, entries: list[NewKnowledgeEntry]) -> int:
         """Insert multiple entries in a single transaction. Returns count inserted."""
         if not entries:
@@ -191,6 +217,7 @@ class KnowledgeStore:
         self._faiss_dirty = True
         return count
 
+    @_synchronized
     def search(
         self,
         query_embedding: np.ndarray,
@@ -366,6 +393,7 @@ class KnowledgeStore:
         scored.sort(key=lambda x: x.score, reverse=True)
         return scored[:limit]
 
+    @_synchronized
     def get(self, entry_id: str) -> Optional[KnowledgeEntry]:
         """Get a knowledge entry by ID."""
         row = self.conn.execute(
@@ -375,6 +403,7 @@ class KnowledgeStore:
             return None
         return self._row_to_entry(row)
 
+    @_synchronized
     def access(self, entry_id: str) -> None:
         """Record an access — updates usage_count and last_accessed."""
         now = datetime.now(timezone.utc).isoformat()
@@ -384,6 +413,7 @@ class KnowledgeStore:
         )
         self.conn.commit()
 
+    @_synchronized
     def promote_to_ltm(self, entry_id: str) -> None:
         """Promote an STM entry to LTM."""
         now = datetime.now(timezone.utc).isoformat()
@@ -393,6 +423,7 @@ class KnowledgeStore:
         )
         self.conn.commit()
 
+    @_synchronized
     def invalidate(self, entry_id: str) -> None:
         """Soft-invalidate by setting valid_to."""
         now = datetime.now(timezone.utc).isoformat()
@@ -403,6 +434,7 @@ class KnowledgeStore:
         self.conn.commit()
         self._faiss_dirty = True
 
+    @_synchronized
     def run_decay_cycle(self, current_time: Optional[datetime] = None) -> dict[str, int]:
         """Apply Ebbinghaus decay. Returns counts of expired and promoted entries.
 
@@ -464,6 +496,7 @@ class KnowledgeStore:
             return 0.0
         return math.exp(-elapsed_hours / stability)
 
+    @_synchronized
     def get_stats(self) -> dict:
         """Return knowledge store statistics."""
         total = self.conn.execute("SELECT COUNT(*) as cnt FROM knowledge_entries WHERE valid_to IS NULL").fetchone()["cnt"]
@@ -493,10 +526,12 @@ class KnowledgeStore:
         self._expected_dim = dim
         return dim
 
+    @_synchronized
     def list_domains(self) -> list[str]:
         rows = self.conn.execute("SELECT DISTINCT domain FROM knowledge_entries WHERE valid_to IS NULL").fetchall()
         return [r["domain"] for r in rows]
 
+    @_synchronized
     def list_topics(self, domain: str) -> list[str]:
         rows = self.conn.execute(
             "SELECT DISTINCT topic FROM knowledge_entries WHERE domain = ? AND valid_to IS NULL",
@@ -504,6 +539,7 @@ class KnowledgeStore:
         ).fetchall()
         return [r["topic"] for r in rows]
 
+    @_synchronized
     def get_all_embeddings(self) -> list[np.ndarray]:
         """Return all valid entry embeddings (for confidence evaluator)."""
         rows = self.conn.execute(
@@ -511,6 +547,7 @@ class KnowledgeStore:
         ).fetchall()
         return [np.frombuffer(r["embedding"], dtype=np.float32) for r in rows]
 
+    @_synchronized
     def count(self) -> int:
         row = self.conn.execute("SELECT COUNT(*) as cnt FROM knowledge_entries WHERE valid_to IS NULL").fetchone()
         return row["cnt"]

@@ -480,39 +480,42 @@ class Agent:
         Reads from the query_log table for totals that survive across sessions,
         and counts facts_learned from knowledge_entries.
         """
-        row = self._conn.execute(
-            "SELECT "
-            "  COUNT(*) AS total, "
-            "  SUM(CASE WHEN routing_decision = 'local' THEN 1 ELSE 0 END) AS local_n, "
-            "  SUM(CASE WHEN routing_decision = 'cloud' THEN 1 ELSE 0 END) AS cloud_n, "
-            "  SUM(CASE WHEN routing_decision = 'memory' THEN 1 ELSE 0 END) AS memory_n, "
-            "  COALESCE(SUM(cost), 0.0) AS total_cost "
-            "FROM query_log"
-        ).fetchone()
+        # The background _learn thread writes to this connection concurrently;
+        # serialize on the shared lock (concurrent sqlite3 use segfaults CPython).
+        with self.memory.lock:
+            row = self._conn.execute(
+                "SELECT "
+                "  COUNT(*) AS total, "
+                "  SUM(CASE WHEN routing_decision = 'local' THEN 1 ELSE 0 END) AS local_n, "
+                "  SUM(CASE WHEN routing_decision = 'cloud' THEN 1 ELSE 0 END) AS cloud_n, "
+                "  SUM(CASE WHEN routing_decision = 'memory' THEN 1 ELSE 0 END) AS memory_n, "
+                "  COALESCE(SUM(cost), 0.0) AS total_cost "
+                "FROM query_log"
+            ).fetchone()
 
-        total = row["total"]
-        total_cost = row["total_cost"]
-        # Estimate what all queries would have cost if sent to cloud.
-        # Use the max actual cloud cost as the per-query estimate for local/memory queries.
-        max_cloud_row = self._conn.execute(
-            "SELECT COALESCE(MAX(cost), 0.015) AS max_cost FROM query_log WHERE cost > 0"
-        ).fetchone()
-        max_cloud_cost = max_cloud_row["max_cost"] if max_cloud_row["max_cost"] else 0.015
-        cloud_actual_row = self._conn.execute(
-            "SELECT COALESCE(SUM(CASE WHEN cost > 0 THEN cost ELSE ? END), 0.0) AS est "
-            "FROM query_log",
-            (max_cloud_cost,),
-        ).fetchone()
-        all_cloud_est = cloud_actual_row["est"] if total > 0 else 0.0
+            total = row["total"]
+            total_cost = row["total_cost"]
+            # Estimate what all queries would have cost if sent to cloud.
+            # Use the max actual cloud cost as the per-query estimate for local/memory queries.
+            max_cloud_row = self._conn.execute(
+                "SELECT COALESCE(MAX(cost), 0.015) AS max_cost FROM query_log WHERE cost > 0"
+            ).fetchone()
+            max_cloud_cost = max_cloud_row["max_cost"] if max_cloud_row["max_cost"] else 0.015
+            cloud_actual_row = self._conn.execute(
+                "SELECT COALESCE(SUM(CASE WHEN cost > 0 THEN cost ELSE ? END), 0.0) AS est "
+                "FROM query_log",
+                (max_cloud_cost,),
+            ).fetchone()
+            all_cloud_est = cloud_actual_row["est"] if total > 0 else 0.0
 
-        saved = all_cloud_est - total_cost
-        saved_pct = (saved / all_cloud_est * 100) if all_cloud_est > 0 else 0.0
+            saved = all_cloud_est - total_cost
+            saved_pct = (saved / all_cloud_est * 100) if all_cloud_est > 0 else 0.0
 
-        # Count facts learned from knowledge store.
-        facts_row = self._conn.execute(
-            "SELECT COUNT(*) AS n FROM knowledge_entries WHERE source = 'cloud_escalation'"
-        ).fetchone()
-        facts_learned = facts_row["n"]
+            # Count facts learned from knowledge store.
+            facts_row = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM knowledge_entries WHERE source = 'cloud_escalation'"
+            ).fetchone()
+            facts_learned = facts_row["n"]
 
         return SavingsReport(
             total_queries=total,
@@ -899,27 +902,30 @@ class Agent:
         elif routed_to == "memory":
             s.memory_queries += 1
 
-        # Persist to query_log (R6 AC1, AC4).
+        # Persist to query_log (R6 AC1, AC4). The background _learn thread writes
+        # to this same connection via self.memory, so serialize on the shared lock
+        # — concurrent use of one sqlite3 connection segfaults CPython.
         try:
             now = datetime.now(timezone.utc).isoformat()
-            self._conn.execute(
-                "INSERT INTO query_log "
-                "(id, query_text, routing_decision, signals, fusion_weights, "
-                "fused_score, cost, latency_ms, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    str(uuid.uuid4()),
-                    question,
-                    routed_to,
-                    "{}",   # signals — not used in product v1
-                    "{}",   # fusion_weights — not used in product v1
-                    confidence,
-                    cost,
-                    latency_ms,
-                    now,
-                ),
-            )
-            self._conn.commit()
+            with self.memory.lock:
+                self._conn.execute(
+                    "INSERT INTO query_log "
+                    "(id, query_text, routing_decision, signals, fusion_weights, "
+                    "fused_score, cost, latency_ms, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        str(uuid.uuid4()),
+                        question,
+                        routed_to,
+                        "{}",   # signals — not used in product v1
+                        "{}",   # fusion_weights — not used in product v1
+                        confidence,
+                        cost,
+                        latency_ms,
+                        now,
+                    ),
+                )
+                self._conn.commit()
         except Exception as e:
             logger.warning("Failed to persist query log: %s", e)
 
