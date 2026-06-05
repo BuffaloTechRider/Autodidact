@@ -13,6 +13,7 @@ TDD: tests first, then create the files they guard.
 
 from __future__ import annotations
 
+import importlib.util
 import subprocess
 import sys
 import tarfile
@@ -154,6 +155,11 @@ class TestBuildArtifacts:
         """Build sdist + wheel once, reuse for multiple assertions."""
         out_dir = tmp_path_factory.mktemp("dist")
         # Skip if `build` module isn't available (local dev optional dep).
+        # `python -m build` with no module installed exits 1 with a
+        # "No module named build" message rather than raising
+        # FileNotFoundError, so check importability up front.
+        if importlib.util.find_spec("build") is None:
+            pytest.skip("`build` module not installed — pip install build")
         try:
             subprocess.run(
                 [sys.executable, "-m", "build", "--outdir", str(out_dir), str(REPO_ROOT)],

@@ -7,6 +7,104 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.7] — 2026-05-22
+
+### Changed
+
+- **PDF and Word support are now optional.** `pymupdf` and `python-docx`
+  moved out of the core dependency list; `DocumentStore` imports them lazily
+  and raises an actionable `ImportError` ("Install with pip install pymupdf")
+  only when a `.pdf` or `.docx` is actually ingested. Keeps the base install
+  lean for users who only ingest text files. (#52)
+- **`openai` promoted to a core dependency.** It was an optional `[openai]`
+  extra, but the OpenAI-compatible client path (OpenRouter, DeepSeek,
+  Together, and cloud-to-cloud mode) is common enough that requiring an extra
+  was a footgun. The `[openai]` extra is removed.
+
+## [1.0.6] — 2026-05-18
+
+Release-tagging bump. No functional changes over 1.0.5.
+
+## [1.0.5] — 2026-05-18
+
+### Changed
+
+- **Refusal detector recognizes more non-answer phrasings** — added markers
+  for "I cannot/can't tell you", "I cannot/can't answer", "I don't have access
+  to", and context-grounded refusals ("the provided context does not contain",
+  "not available in the provided context"). Catches more cases where the local
+  model declines, so they escalate instead of being stored as answers.
+- **Cloud provider default switched to Google** in the setup wizard's provider
+  picker.
+
+### Fixed
+
+- **Chat session summary now reports the current session, not all-time DB
+  stats.** On exit, `chat` prefers per-session stats and recomputes savings
+  from this session's cloud cost, so the closing summary reflects what just
+  happened rather than the cumulative database total.
+
+## [1.0.4] — 2026-05-18
+
+### Changed
+
+- **Memory-recall answers now stream.** When a query is answered from memory,
+  the local model generates the answer via the streaming path (`_call_local`)
+  like every other route, instead of a blocking `chat()` call — tokens render
+  as they arrive.
+
+## [1.0.3] — 2026-05-17
+
+### Added
+
+- **Custom Server wizard mode** — `autodidact init` can point the local slot at
+  any OpenAI-compatible server (llama.cpp, LM Studio, vLLM) instead of Ollama. (#28)
+- **CI test workflow** for PR status checks.
+
+### Changed
+
+- **Ollama install flow hardened** — retries the installer, offers a manual
+  fallback with a wait loop, and auto-starts the daemon. (#28)
+- **Cost calculation updated.**
+
+### Fixed
+
+- **botocore test skips when the module isn't installed** instead of failing.
+
+## [1.0.2] — 2026-05-15
+
+### Added
+
+- **Hybrid retrieval (BM25 + vector)** — document chunks get an FTS5 virtual
+  table with sync triggers; `search_hybrid()` merges keyword (BM25) and vector
+  results via Reciprocal Rank Fusion (k=60). The agent uses hybrid search for
+  document context.
+- **Document synthesis on ingest** — a non-blocking background thread extracts
+  key facts from document sections after chunking, batch-inserting them
+  (10 facts/commit) to minimize write-lock contention. `KnowledgeStore` gains
+  `insert_batch()`.
+- **Local + Local setup mode** — small Ollama model + big Ollama model, fully
+  offline and still learning. Fourth option in the setup wizard.
+
+### Changed
+
+- **Memory hits generate a full answer** via the local model using the stored
+  facts as context, rather than returning raw stored text.
+- **Cloud-escalation learning runs in the background** (non-blocking), and the
+  SQLite connection allows cross-thread access (`check_same_thread=False`) to
+  support the background threads.
+
+### Fixed
+
+- **Chunk cap enforced with the BGE tokenizer** during ingestion, so chunks
+  can't overflow the embedding model's context.
+
+### Housekeeping
+
+- Moved `confidence_evaluator.py` to `benchmarks/` — it's unused in production
+  (the validated single-signal `logprob_uncertainty` path replaced the
+  multi-signal fusion).
+
 ## [1.0.1] — 2026-05-13
 
 Polish, performance, and correctness on top of 1.0.0. No breaking changes.
@@ -136,5 +234,12 @@ confidence-based routing, and learning from cloud escalations.
 - Algorithms are not individually novel; the contribution is the well-engineered
   closed loop and the end-to-end measurement with answer accuracy preserved.
 
-[Unreleased]: https://github.com/BuffaloTechRider/Autodidact/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/BuffaloTechRider/Autodidact/compare/v1.0.7...HEAD
+[1.0.7]: https://github.com/BuffaloTechRider/Autodidact/compare/v1.0.6...v1.0.7
+[1.0.6]: https://github.com/BuffaloTechRider/Autodidact/compare/v1.0.5...v1.0.6
+[1.0.5]: https://github.com/BuffaloTechRider/Autodidact/compare/v1.0.4...v1.0.5
+[1.0.4]: https://github.com/BuffaloTechRider/Autodidact/compare/v1.0.3...v1.0.4
+[1.0.3]: https://github.com/BuffaloTechRider/Autodidact/compare/v1.0.2...v1.0.3
+[1.0.2]: https://github.com/BuffaloTechRider/Autodidact/compare/v1.0.1...v1.0.2
+[1.0.1]: https://github.com/BuffaloTechRider/Autodidact/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/BuffaloTechRider/Autodidact/releases/tag/v1.0.0
