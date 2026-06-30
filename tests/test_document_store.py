@@ -342,3 +342,76 @@ class TestStoreSeparation:
 
         assert ke_count == 0
         assert dc_count >= 1
+
+
+class TestDoclingReader:
+    """Docling is the preferred PDF/DOCX reader, with graceful fallback."""
+
+    def _fake_converter(self, markdown: str):
+        """Build a stand-in for docling's DocumentConverter."""
+        converter = MagicMock()
+        converter.convert.return_value.document.export_to_markdown.return_value = markdown
+        return converter
+
+    def test_read_with_docling_returns_markdown(self, monkeypatch, tmp_path):
+        """When docling is available, its Markdown output is returned."""
+        from autodidact import document_store
+
+        monkeypatch.setattr(
+            document_store,
+            "_get_docling_converter",
+            lambda: self._fake_converter("| a | b |\n| - | - |\n| 1 | 2 |"),
+        )
+        out = document_store._read_with_docling(tmp_path / "report.pdf")
+        assert out == "| a | b |\n| - | - |\n| 1 | 2 |"
+
+    def test_read_with_docling_unavailable_returns_none(self, monkeypatch, tmp_path):
+        """When docling is not installed, None signals the caller to fall back."""
+        from autodidact import document_store
+
+        monkeypatch.setattr(document_store, "_get_docling_converter", lambda: None)
+        assert document_store._read_with_docling(tmp_path / "report.pdf") is None
+
+    def test_read_with_docling_conversion_failure_returns_none(
+        self, monkeypatch, tmp_path
+    ):
+        """A conversion error is swallowed and falls back rather than raising."""
+        from autodidact import document_store
+
+        broken = MagicMock()
+        broken.convert.side_effect = RuntimeError("bad pdf")
+        monkeypatch.setattr(document_store, "_get_docling_converter", lambda: broken)
+        assert document_store._read_with_docling(tmp_path / "report.pdf") is None
+
+    def test_read_text_prefers_docling_for_pdf(self, monkeypatch, doc_store, tmp_path):
+        """_read_text_from_file uses docling output for PDFs when available."""
+        from autodidact import document_store
+
+        monkeypatch.setattr(
+            document_store,
+            "_get_docling_converter",
+            lambda: self._fake_converter("# Docling extracted"),
+        )
+        # File contents are irrelevant — docling is mocked and short-circuits
+        # before the pymupdf reader runs.
+        pdf = tmp_path / "report.pdf"
+        pdf.write_bytes(b"%PDF-1.4 not really parsed")
+        assert doc_store._read_text_from_file(pdf) == "# Docling extracted"
+
+    def test_read_text_falls_back_when_docling_absent(
+        self, monkeypatch, doc_store, tmp_path
+    ):
+        """Without docling, PDFs go through the pymupdf reader as before."""
+        from autodidact import document_store
+
+        monkeypatch.setattr(document_store, "_get_docling_converter", lambda: None)
+        pdf = tmp_path / "report.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+
+        fake_page = MagicMock()
+        fake_page.get_text.return_value = "fallback text"
+        fake_pymupdf = MagicMock()
+        fake_pymupdf.open.return_value = [fake_page]
+        monkeypatch.setitem(__import__("sys").modules, "pymupdf", fake_pymupdf)
+
+        assert doc_store._read_text_from_file(pdf) == "fallback text"

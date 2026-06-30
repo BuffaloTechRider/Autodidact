@@ -158,6 +158,56 @@ def _count_bge_tokens(text: str) -> Optional[int]:
     return len(tok.encode(text).ids)
 
 
+# ── Docling document converter (optional, for PDF/DOCX) ──────────
+# Docling extracts layout, tables, and figures from rich documents and
+# serializes to Markdown — tables become Markdown tables instead of the
+# mojibake/flattened text the plain pymupdf/python-docx readers produce.
+# It is an optional dependency (`pip install autodidact[docling]`); when
+# absent we fall back to pymupdf/python-docx. Loaded lazily and cached so
+# the heavy model init (layout + TableFormer) happens once per process.
+_DOCLING_CONVERTER: Any = None
+_DOCLING_LOADED = False
+
+
+def _get_docling_converter():
+    """Return the cached docling ``DocumentConverter``, or None if unavailable.
+
+    The first call attempts to construct it; subsequent calls reuse the
+    result (success or None). Returning None signals the caller to fall
+    back to the pymupdf/python-docx readers.
+    """
+    global _DOCLING_CONVERTER, _DOCLING_LOADED
+    if _DOCLING_LOADED:
+        return _DOCLING_CONVERTER
+    _DOCLING_LOADED = True
+    try:
+        from docling.document_converter import DocumentConverter  # type: ignore
+        _DOCLING_CONVERTER = DocumentConverter()
+    except Exception as e:
+        # docling not installed, or model init failed (e.g. no network on
+        # first run to fetch layout/TableFormer weights from HF Hub).
+        logger.debug("Docling unavailable, falling back to basic readers: %s", e)
+        _DOCLING_CONVERTER = None
+    return _DOCLING_CONVERTER
+
+
+def _read_with_docling(file_path: Path) -> Optional[str]:
+    """Convert a PDF/DOCX to Markdown via docling, or None if it can't.
+
+    Returns None when docling is unavailable or conversion fails, so the
+    caller falls back to the basic pymupdf/python-docx readers.
+    """
+    converter = _get_docling_converter()
+    if converter is None:
+        return None
+    try:
+        result = converter.convert(file_path)
+        return result.document.export_to_markdown()
+    except Exception as e:
+        logger.warning("Docling failed to convert %s, falling back: %s", file_path, e)
+        return None
+
+
 # ── AST-aware chunking (tree-sitter) ─────────────────────────────
 
 # Language extensions → tree-sitter grammar loader. Loaded lazily.
@@ -672,6 +722,13 @@ class DocumentStore:
         """
         try:
             ext = file_path.suffix.lower()
+            if ext in (".pdf", ".docx"):
+                # Prefer docling: it preserves layout and tables as Markdown.
+                # Returns None when docling is unavailable or conversion
+                # fails, in which case we fall back to the basic readers.
+                docling_text = _read_with_docling(file_path)
+                if docling_text is not None:
+                    return docling_text
             if ext == ".pdf":
                 try:
                     import pymupdf
@@ -965,8 +1022,8 @@ class DocumentStore:
 
         for file_path in walk_files(path):
             try:
-                text = file_path.read_text(encoding="utf-8", errors="replace")
-            except OSError:
+                text = self._read_text_from_file(file_path)
+            except (OSError, ImportError):
                 continue
 
             if not text.strip():
