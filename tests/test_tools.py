@@ -146,6 +146,16 @@ class TestTerminal:
 
 
 class TestFileOps:
+    @pytest.fixture(autouse=True)
+    def _in_tmp_cwd(self, tmp_path, monkeypatch):
+        """Run each file-ops test inside tmp_path.
+
+        The tools confine paths to the current working directory, so tests
+        operate relative to a temp cwd (mirroring the agent running inside its
+        project directory). Paths below are given relative to tmp_path.
+        """
+        monkeypatch.chdir(tmp_path)
+
     def test_write_then_read_roundtrip(self, tmp_path):
         p = tmp_path / "sub" / "note.txt"
         w = file_ops.write_file({"path": str(p), "content": "hello world"})
@@ -173,8 +183,32 @@ class TestFileOps:
     def test_edit_non_unique_substring_raises(self, tmp_path):
         p = tmp_path / "f.txt"
         p.write_text("x x x")
-        with pytest.raises(ValueError, match="not unique"):
+        with pytest.raises(ValueError, match="multiple"):
             file_ops.edit_file({"path": str(p), "old": "x", "new": "y"})
+
+    def test_edit_fuzzy_matches_indentation_drift(self, tmp_path):
+        # File block is indented 8 spaces; the model's multi-line 'old' is
+        # de-indented. Line-trimmed fuzzy matching finds it, and the new text
+        # is re-anchored to the file's actual indentation.
+        p = tmp_path / "code.py"
+        p.write_text("def f():\n        a = 1\n        b = 2\n")
+        res = file_ops.edit_file(
+            {"path": str(p), "old": "a = 1\nb = 2", "new": "a = 10\nb = 20"}
+        )
+        assert res["strategy"] == "line-trimmed"
+        assert p.read_text() == "def f():\n        a = 10\n        b = 20\n"
+
+    def test_edit_exact_match_takes_priority(self, tmp_path):
+        p = tmp_path / "f.txt"
+        p.write_text("alpha beta")
+        res = file_ops.edit_file({"path": str(p), "old": "beta", "new": "B"})
+        assert res["strategy"] == "exact"
+        assert p.read_text() == "alpha B"
+
+    def test_path_escape_is_rejected(self, tmp_path):
+        # A traversal outside the working directory must be refused.
+        with pytest.raises(PermissionError, match="escapes"):
+            file_ops.read_file({"path": "../../../etc/passwd"})
 
     def test_search_finds_matches(self, tmp_path):
         (tmp_path / "a.txt").write_text("foo\nbar\nfoobar")
