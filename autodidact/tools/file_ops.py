@@ -18,6 +18,7 @@ import logging
 import re
 from pathlib import Path
 
+from autodidact.tools.fuzzy_match import FuzzyMatchError, fuzzy_replace
 from autodidact.tools.registry import REGISTRY
 
 logger = logging.getLogger(__name__)
@@ -26,9 +27,27 @@ _MAX_READ_BYTES = 64_000  # a single read shouldn't dominate the context
 _MAX_SEARCH_MATCHES = 100  # cap grep output so a broad pattern stays bounded
 
 
+def _resolved_within_cwd(path: Path) -> Path:
+    """Resolve ``path`` and ensure it stays within the current directory.
+
+    The tools operate on the project the agent was launched in; a model should
+    not be able to read or write ``/etc/passwd`` via ``../../..`` or a symlink.
+    ``resolve()`` normalizes traversal and follows symlinks, then we require
+    the result to sit under the resolved cwd. Raises ``PermissionError`` on an
+    escape so the registry surfaces it as tool output.
+    """
+    root = Path.cwd().resolve()
+    resolved = path.resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        raise PermissionError(f"path escapes the working directory: {path}")
+    return resolved
+
+
 def read_file(args: dict) -> dict:
     """Return the text contents of a file (UTF-8, truncated if large)."""
-    path = Path(args["path"])
+    path = _resolved_within_cwd(Path(args["path"]))
     if not path.is_file():
         raise FileNotFoundError(f"not a file: {path}")
     data = path.read_bytes()
@@ -42,7 +61,7 @@ def write_file(args: dict) -> dict:
 
     Parent directories are created as needed. Returns the byte count written.
     """
-    path = Path(args["path"])
+    path = _resolved_within_cwd(Path(args["path"]))
     content = args.get("content", "")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
@@ -50,26 +69,27 @@ def write_file(args: dict) -> dict:
 
 
 def edit_file(args: dict) -> dict:
-    """Replace an exact substring in a file (find/replace patch).
+    """Replace a unique occurrence of ``old`` with ``new`` (fuzzy find/replace).
 
-    ``old`` must occur exactly once, mirroring the surgical-edit contract:
-    a zero-match or multi-match edit is ambiguous and raises rather than
-    guessing. Set ``count`` behavior is intentionally omitted — one edit,
-    one unique target.
+    Matching falls through a chain of increasing fuzziness (exact →
+    line-trimmed) so an LLM-generated ``old`` that drifts on indentation or
+    trailing whitespace still lands — the common failure mode when a cloud
+    escalation re-derives a patch. ``old`` must still resolve to exactly one
+    location; a zero- or multi-match edit is ambiguous and raises rather than
+    guessing. The report includes which ``strategy`` matched.
     """
-    path = Path(args["path"])
+    path = _resolved_within_cwd(Path(args["path"]))
     old = args["old"]
     new = args["new"]
     if not path.is_file():
         raise FileNotFoundError(f"not a file: {path}")
     text = path.read_text(encoding="utf-8", errors="replace")
-    occurrences = text.count(old)
-    if occurrences == 0:
-        raise ValueError("'old' string not found in file")
-    if occurrences > 1:
-        raise ValueError(f"'old' string is not unique ({occurrences} matches)")
-    path.write_text(text.replace(old, new, 1), encoding="utf-8")
-    return {"path": str(path), "replaced": True}
+    try:
+        new_text, strategy = fuzzy_replace(text, old, new)
+    except FuzzyMatchError as e:
+        raise ValueError(str(e))
+    path.write_text(new_text, encoding="utf-8")
+    return {"path": str(path), "replaced": True, "strategy": strategy}
 
 
 def search_files(args: dict) -> dict:
@@ -83,7 +103,7 @@ def search_files(args: dict) -> dict:
     and line text, plus a ``truncated`` flag when the cap was hit.
     """
     pattern = args["pattern"]
-    root = Path(args.get("path") or ".")
+    root = _resolved_within_cwd(Path(args.get("path") or "."))
     try:
         regex = re.compile(pattern)
     except re.error as e:
@@ -118,7 +138,7 @@ def list_directory(args: dict) -> dict:
     Each entry reports its name and whether it's a directory. Not recursive —
     the model can descend by listing subdirectories or use ``search_files``.
     """
-    path = Path(args.get("path") or ".")
+    path = _resolved_within_cwd(Path(args.get("path") or "."))
     if not path.is_dir():
         raise NotADirectoryError(f"not a directory: {path}")
     entries = [
