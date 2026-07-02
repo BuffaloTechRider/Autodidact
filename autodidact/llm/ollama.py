@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import os
 import time
-from dataclasses import asdict
 from typing import Any, Callable, TYPE_CHECKING
 
 import numpy as np
@@ -23,6 +22,7 @@ from autodidact.llm.backend import (
     _consume_ollama_stream,
     _consume_ollama_stream_plain,
     _extract_answer,
+    _message_to_tool_dict,
     _with_retries,
 )
 from autodidact.llm.backend import _THINK_TAG_RE  # noqa: F401  # for had_thinking detection
@@ -44,6 +44,32 @@ import re as _re
 _THINK_TAG_RE = _re.compile(r"<think>.*?</think>\s*", _re.DOTALL | _re.IGNORECASE)
 
 
+def _parse_ollama_tool_calls(message: dict) -> list:
+    """Parse Ollama's ``message.tool_calls`` into our ToolCall list.
+
+    Ollama returns ``{"function": {"name", "arguments": {...}}}`` per call —
+    arguments are already a dict (not a JSON string as in OpenAI). Ollama
+    supplies no call id, so we synthesize a stable positional one so results
+    can be correlated on the next turn.
+    """
+    from autodidact.llm_client import ToolCall
+
+    raw = message.get("tool_calls")
+    if not isinstance(raw, list):
+        return []
+    calls = []
+    for i, item in enumerate(raw):
+        fn = (item or {}).get("function") or {}
+        name = fn.get("name")
+        if not name:
+            continue
+        args = fn.get("arguments")
+        if not isinstance(args, dict):
+            args = {}
+        calls.append(ToolCall(id=item.get("id") or f"call_{i}", name=name, arguments=args))
+    return calls
+
+
 class OllamaBackend:
     """ChatBackend implementation for Ollama HTTP API."""
 
@@ -57,12 +83,15 @@ class OllamaBackend:
         from autodidact.llm_client import ChatResponse
 
         think = opts.pop("think", None)
+        tools = opts.pop("tools", None)
         body = {
             "model": self.config.model,
-            "messages": [asdict(m) for m in messages],
+            "messages": [_message_to_tool_dict(m) for m in messages],
             "stream": False,
             "options": self._options(opts),
         }
+        if tools:
+            body["tools"] = tools
         if think is not None:
             body["think"] = bool(think)
 
@@ -70,13 +99,15 @@ class OllamaBackend:
         data = self._post("/api/chat", body)
         latency_ms = int((time.perf_counter() - started) * 1000)
 
-        content = _extract_answer(data.get("message") or {})
+        message = data.get("message") or {}
+        content = _extract_answer(message)
         return ChatResponse(
             content=content,
             model=data.get("model", self.config.model),
             input_tokens=int(data.get("prompt_eval_count", 0) or 0),
             output_tokens=int(data.get("eval_count", 0) or 0),
             latency_ms=latency_ms,
+            tool_calls=_parse_ollama_tool_calls(message),
         )
 
     def chat_with_logprobs(
@@ -90,7 +121,7 @@ class OllamaBackend:
         think = opts.pop("think", None)
         body = {
             "model": self.config.model,
-            "messages": [asdict(m) for m in messages],
+            "messages": [_message_to_tool_dict(m) for m in messages],
             "stream": False,
             "logprobs": True,
             "top_logprobs": top_logprobs_k,
@@ -164,7 +195,7 @@ class OllamaBackend:
 
         body: dict[str, Any] = {
             "model": self.config.model,
-            "messages": [asdict(m) for m in messages],
+            "messages": [_message_to_tool_dict(m) for m in messages],
             "stream": True,
             "logprobs": True,
             "top_logprobs": top_logprobs_k,
@@ -226,7 +257,7 @@ class OllamaBackend:
 
         body: dict[str, Any] = {
             "model": self.config.model,
-            "messages": [asdict(m) for m in messages],
+            "messages": [_message_to_tool_dict(m) for m in messages],
             "stream": True,
             "options": options,
         }

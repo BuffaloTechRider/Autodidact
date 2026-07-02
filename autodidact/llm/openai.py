@@ -13,12 +13,11 @@ from __future__ import annotations
 
 import os
 import time
-from dataclasses import asdict
 from typing import Any, Callable, TYPE_CHECKING
 
 import numpy as np
 
-from autodidact.llm.backend import _with_retries
+from autodidact.llm.backend import _message_to_tool_dict, _with_retries
 
 if TYPE_CHECKING:
     from autodidact.llm_client import (
@@ -27,6 +26,35 @@ if TYPE_CHECKING:
         ChatResponseWithLogprobs,
         LLMConfig,
     )
+
+
+def _parse_openai_tool_calls(message: Any) -> list:
+    """Parse an OpenAI message's ``tool_calls`` into our ToolCall list.
+
+    OpenAI returns ``function.arguments`` as a JSON *string*; we decode it to a
+    dict. A call whose arguments aren't valid JSON is kept with empty arguments
+    rather than dropped, so the caller still sees the intended tool name.
+    """
+    import json
+
+    from autodidact.llm_client import ToolCall
+
+    raw = getattr(message, "tool_calls", None)
+    if not raw:
+        return []
+    calls = []
+    for tc in raw:
+        fn = getattr(tc, "function", None)
+        if fn is None:
+            continue
+        try:
+            args = json.loads(fn.arguments) if fn.arguments else {}
+        except (ValueError, TypeError):
+            args = {}
+        if not isinstance(args, dict):
+            args = {}
+        calls.append(ToolCall(id=getattr(tc, "id", "") or "", name=fn.name, arguments=args))
+    return calls
 
 
 class OpenAICompatBackend:
@@ -59,6 +87,7 @@ class OpenAICompatBackend:
                 input_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
                 output_tokens=int(getattr(usage, "completion_tokens", 0) or 0),
                 latency_ms=latency_ms,
+                tool_calls=_parse_openai_tool_calls(choice.message),
             )
 
         return _with_retries(do, self.config.max_retries, self._transient_exceptions())
@@ -238,7 +267,7 @@ class OpenAICompatBackend:
     ) -> dict[str, Any]:
         kwargs: dict[str, Any] = {
             "model": self.config.model,
-            "messages": [asdict(m) for m in messages],
+            "messages": [_message_to_tool_dict(m) for m in messages],
         }
         if "max_tokens" in opts:
             kwargs["max_tokens"] = int(opts["max_tokens"])
@@ -248,6 +277,10 @@ class OpenAICompatBackend:
             kwargs["top_p"] = float(opts["top_p"])
         if "seed" in opts:
             kwargs["seed"] = int(opts["seed"])
+        if opts.get("tools"):
+            kwargs["tools"] = opts["tools"]
+            if "tool_choice" in opts:
+                kwargs["tool_choice"] = opts["tool_choice"]
         return kwargs
 
 
