@@ -81,10 +81,14 @@ Also skip for v2.0: external skill directories (multi-profile sharing), Curator 
 | **Iteration bounds + escalation budget** | Prevents infinite loops; caps cost. | Low |
 | **Trajectory compression** (protect head+tail, summarize middle) | DESIGN-V2 flags context-window growth as an open risk; Ollama's 4–8 K window overflows on multi-step tasks. Adopt the *strategy*, not their 1.5 K-LOC service — target ~150 LOC with a local-model summarizer. | Medium |
 | **Simplified error classification** (retry 5xx/timeout, fallback on 429, fail fast on 401/403) | Resilience without provider-specific machinery. | Low |
+| **Trajectory persistence + resume** (per-iteration checkpoint to SQLite; resume interrupted task) | Not just crash-insurance: for a *learning* agent the trajectory (messages + tool results + per-step routing decisions + escalations) is a first-class learning artifact. A task that already spent cloud-escalation dollars must not be thrown away on interrupt. **Match** Hermes' resume; **beat** it by making trajectories queryable/replayable and feeding them to skill extraction + threshold tuning. Adopt the capability at our scale (~SQLite table), not their 245 KB `hermes_state.py`. | Medium |
+| **Cache-aware message construction + explicit cloud cache_control** | Byte-stable system prefix (system prompt + tool schemas); ephemeral content (memory/context injections) goes into user messages, never the system prompt. The executor re-sends the prefix ~20×/task, so this (a) warms Ollama's local KV/context cache on the hot path and (b) lets the escalation path pass provider cache params (Anthropic `cache_control`) where cloud cost concentrates. Cheap to adopt now, expensive to retrofit once ephemeral content has leaked into the system prompt. | Low–Medium |
 
 ### SKIP (v2.0)
 
-Provider transport abstraction (we already have 3 backends), async/concurrent tool execution, streaming display + TTS + stale-stream health checks, session persistence + mid-run resume/checkpointing, thinking-block edge-case handling, ephemeral system prompts + prompt caching, Nous-specific rate-limit guard.
+Provider transport abstraction (we already have 3 backends), async/concurrent tool execution, streaming display + TTS + stale-stream health checks, thinking-block edge-case handling, Nous-specific rate-limit guard.
+
+> **Revised 2026-07-08:** session persistence/resume and prompt caching were moved SKIP → ADOPT. Rationale: the "match or beat Hermes" bar (CLAUDE.md §5) applies — both intersect the moat (persistence feeds learning; caching hits the cloud-escalation cost we exist to reduce), and caching discipline is cheap now / costly to retrofit. We adopt the *capabilities* at Autodidact scale, not Hermes' heavy implementations.
 
 ### Integration — splicing the moat into a Hermes-style loop
 
@@ -113,6 +117,6 @@ This is the one place a "commodity" component carries the moat: adopt Hermes' lo
 |------|-------------------|------------------|
 | **Tools** | Fuzzy edit (done), path confinement (done) | Registry is otherwise sufficient; skip availability probes, plugin policy, AST discovery |
 | **Skills** | Compact index + on-demand load, platform/tool gating | Keep SQLite + structured + embedded + success-tracked; skip Markdown-only, Curator daemon |
-| **Loop** | Loop skeleton, tool parse/validate, compression, budgets | Splice in our tiered routing; skip transports, streaming, resume |
+| **Loop** | Loop skeleton, tool parse/validate, compression, budgets, trajectory persistence+resume, cache-aware construction | Splice in our tiered routing; skip transports, streaming, async tool exec |
 
 **Bottom line:** Autodidact and Hermes are complementary, not competing. Hermes solves multi-user/plugin/platform scale; Autodidact solves confidence routing + learning, which Hermes never attempted. We take Hermes' scaffolding patterns and keep our moat.
