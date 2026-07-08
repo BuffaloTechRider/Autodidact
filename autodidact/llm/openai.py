@@ -136,6 +136,7 @@ class OpenAICompatBackend:
                 logprobs=token_lps,
                 avg_logprob=avg_lp,
                 top_logprobs_by_position=top_lps,
+                tool_calls=_parse_openai_tool_calls(choice.message),
             )
 
         return _with_retries(do, self.config.max_retries, self._transient_exceptions())

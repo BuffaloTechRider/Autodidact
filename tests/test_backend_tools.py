@@ -210,6 +210,78 @@ class TestOpenAITools:
         assert out.tool_calls[0].arguments == {}
 
 
+# ── Tools + logprobs together (step-level routing needs both) ────
+
+
+class TestToolsWithLogprobs:
+    """The tiered executor generates a tool call and scores its confidence in a
+    single call, so chat_with_logprobs must return BOTH tool_calls and logprobs.
+    """
+
+    def test_ollama_logprobs_path_passes_tools_and_parses_calls(self):
+        backend = OllamaBackend(LLMConfig(provider="ollama", model="qwen3:8b"))
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {
+            "model": "qwen3:8b",
+            "message": {
+                "content": "",
+                "tool_calls": [
+                    {"function": {"name": "terminal", "arguments": {"command": "ls"}}}
+                ],
+            },
+            "logprobs": [{"logprob": -0.1}, {"logprob": -0.3}],
+        }
+        with patch("autodidact.llm.ollama.requests.post", return_value=resp) as mock_post:
+            out = backend.chat_with_logprobs(
+                [ChatMessage(role="user", content="hi")], tools=_TOOLS
+            )
+        # tools reached the request body
+        assert mock_post.call_args.kwargs["json"]["tools"] == _TOOLS
+        # both signals present on the response
+        assert out.avg_logprob is not None
+        assert len(out.tool_calls) == 1
+        assert out.tool_calls[0].name == "terminal"
+        assert out.tool_calls[0].arguments == {"command": "ls"}
+
+    def test_openai_logprobs_path_passes_tools_and_parses_calls(self):
+        backend = OpenAICompatBackend(
+            LLMConfig(provider="openai", model="gpt-4o-mini", api_key="test")
+        )
+        fn = MagicMock()
+        fn.name = "terminal"
+        fn.arguments = '{"command": "ls"}'
+        tc = MagicMock()
+        tc.id = "call_abc"
+        tc.function = fn
+        message = MagicMock()
+        message.content = None
+        message.tool_calls = [tc]
+        lp_item = MagicMock()
+        lp_item.logprob = -0.2
+        lp_item.top_logprobs = []
+        choice = MagicMock()
+        choice.message = message
+        choice.logprobs = MagicMock(content=[lp_item])
+        resp = MagicMock()
+        resp.choices = [choice]
+        resp.model = "gpt-4o-mini"
+        resp.usage = MagicMock(prompt_tokens=1, completion_tokens=1)
+        client = MagicMock()
+        client.chat.completions.create.return_value = resp
+        with patch.object(backend, "_get_client", return_value=client):
+            out = backend.chat_with_logprobs(
+                [ChatMessage(role="user", content="hi")], tools=_TOOLS
+            )
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs["tools"] == _TOOLS
+        assert kwargs["logprobs"] is True
+        assert out.avg_logprob is not None
+        assert len(out.tool_calls) == 1
+        assert out.tool_calls[0].name == "terminal"
+        assert out.tool_calls[0].arguments == {"command": "ls"}
+
+
 # ── Bedrock (not yet supported) ──────────────────────────────────
 
 
@@ -218,3 +290,10 @@ class TestBedrockRejectsTools:
         client = LLMClient(LLMConfig(provider="bedrock", model="anthropic.claude-v2"))
         with pytest.raises(LLMClientError, match="not yet supported"):
             client.chat([ChatMessage(role="user", content="hi")], tools=_TOOLS)
+
+    def test_logprobs_path_also_rejects_tools(self):
+        client = LLMClient(LLMConfig(provider="bedrock", model="anthropic.claude-v2"))
+        with pytest.raises(LLMClientError, match="not yet supported"):
+            client.chat_with_logprobs(
+                [ChatMessage(role="user", content="hi")], tools=_TOOLS
+            )

@@ -118,6 +118,16 @@ class ToolRegistry:
         allowed = set(toolsets)
         return [n for n, e in self._tools.items() if e.toolset in allowed]
 
+    def toolset_of(self, name: str) -> Optional[str]:
+        """Return the toolset a tool belongs to, or None if unknown.
+
+        The executor uses this as the routing category for a proposed tool
+        call (e.g. "terminal" / "file"), so it can pick the right confidence
+        threshold per step.
+        """
+        entry = self._tools.get(name)
+        return entry.toolset if entry is not None else None
+
     def dispatch(self, name: str, arguments: dict) -> str:
         """Run a tool by name and return its result as a JSON string.
 
