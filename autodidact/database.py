@@ -88,6 +88,48 @@ CREATE INDEX IF NOT EXISTS idx_ql_created ON query_log(created_at);
 CREATE INDEX IF NOT EXISTS idx_ql_session ON query_log(session_id);
 CREATE INDEX IF NOT EXISTS idx_ql_outcome ON query_log(outcome);
 
+-- ── Executor trajectories (v2 tool-execution loop) ────────────────
+-- Two-level: one row per task run (execution_trajectories) plus one row per
+-- ReAct iteration (trajectory_steps). Serves both resume (replay steps to
+-- rebuild the message list) and learning (query completed trajectories for
+-- skill extraction and threshold tuning). status drives resume eligibility.
+
+CREATE TABLE IF NOT EXISTS execution_trajectories (
+    id                TEXT PRIMARY KEY,
+    task              TEXT NOT NULL,
+    system_prompt     TEXT,
+    context           TEXT,
+    status            TEXT NOT NULL DEFAULT 'running'
+                      CHECK(status IN ('running','done','budget_exhausted','failed')),
+    answer            TEXT,
+    steps_taken       INTEGER NOT NULL DEFAULT 0,
+    escalations       INTEGER NOT NULL DEFAULT 0,
+    tools_used        TEXT NOT NULL DEFAULT '[]',
+    cost_usd          REAL NOT NULL DEFAULT 0.0,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_et_status ON execution_trajectories(status);
+CREATE INDEX IF NOT EXISTS idx_et_created ON execution_trajectories(created_at);
+
+CREATE TABLE IF NOT EXISTS trajectory_steps (
+    id                TEXT PRIMARY KEY,
+    trajectory_id     TEXT NOT NULL REFERENCES execution_trajectories(id) ON DELETE CASCADE,
+    step_index        INTEGER NOT NULL,
+    category          TEXT,               -- routing category (tool's toolset)
+    tier              TEXT,               -- LOCAL | VERIFY | CLOUD
+    avg_logprob       REAL,               -- local model confidence for the step
+    tool_name         TEXT,
+    tool_arguments    TEXT,               -- JSON
+    tool_result       TEXT,               -- JSON envelope from dispatch
+    assistant_content TEXT,
+    created_at        TEXT NOT NULL,
+    UNIQUE(trajectory_id, step_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ts_trajectory ON trajectory_steps(trajectory_id);
+
 -- ── Experiment tables (v0.1 ablation experiment) ──────────────────
 
 CREATE TABLE IF NOT EXISTS experiment_results (

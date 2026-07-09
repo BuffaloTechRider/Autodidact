@@ -32,6 +32,8 @@ from typing import Any, Callable, Optional, Protocol
 from autodidact.llm_client import ChatMessage, ChatResponseWithLogprobs, ToolCall
 from autodidact.routing.step_router import StepRouter, Threshold, Tier
 from autodidact.tools.registry import ToolRegistry
+from autodidact.trajectory_compress import Summarizer, compress_if_needed
+from autodidact.trajectory_store import StepRecord, TrajectoryStore
 
 
 # ── Collaborator protocols ───────────────────────────────────────
@@ -100,14 +102,32 @@ class Executor:
         tools: ToolRegistry,
         router: StepRouter,
         max_iterations: int = 20,
+        max_escalations: int = 5,
         estimate_cost: Optional[Callable[[int, int], float]] = None,
+        cloud_cache_ttl: Optional[str] = None,
+        store: Optional[TrajectoryStore] = None,
+        compress_token_budget: Optional[int] = None,
+        summarize: Optional[Summarizer] = None,
     ) -> None:
         self._local = local
         self._cloud = cloud
         self._tools = tools
         self._router = router
         self._max_iterations = max(1, int(max_iterations))
+        # Cap cloud escalations per task to bound cost; once spent, uncertain
+        # steps stay local instead of escalating.
+        self._max_escalations = max(0, int(max_escalations))
         self._estimate_cost = estimate_cost or (lambda _i, _o: 0.0)
+        # Optional trajectory compression: when the message list exceeds the
+        # budget, summarize the stale middle (head + tail preserved).
+        self._compress_token_budget = compress_token_budget
+        self._summarize = summarize
+        # When set ("5m"/"1h"), cloud calls request Anthropic prompt caching on
+        # the stable prefix. Leave None for OpenAI/other strict endpoints.
+        self._cloud_cache_ttl = cloud_cache_ttl
+        # Optional: persist each iteration for resume + learning. None = the
+        # loop runs in memory only (unit tests, ephemeral runs).
+        self._store = store
 
     def execute(
         self,
@@ -116,6 +136,7 @@ class Executor:
         system: Optional[str] = None,
         context: Optional[str] = None,
         on_progress: ProgressCallback = None,
+        resume_from: Optional[str] = None,
     ) -> ExecutionResult:
         emit = on_progress or (lambda _e: None)
 
@@ -128,15 +149,45 @@ class Executor:
             )
 
         schemas = self._tools.get_schemas()
-        messages = self._build_initial_messages(task, system, context)
 
+        # Resume an interrupted run, or start fresh. On resume we replay the
+        # persisted tool turns after the rebuilt prefix and continue where the
+        # committed steps left off.
         steps = 0
+        messages: list[ChatMessage]
+        trajectory_id: Optional[str] = None
+        if resume_from is not None and self._store is not None:
+            head = self._store.header(resume_from)
+            if head is None:
+                raise ValueError(f"unknown trajectory to resume: {resume_from!r}")
+            trajectory_id = resume_from
+            task = head["task"]
+            system = head["system"]
+            context = head["context"]
+            prior = self._store.load_steps(resume_from)
+            steps = prior[-1].step_index if prior else 0
+            messages = self._build_initial_messages(task, system, context)
+            messages.extend(self._store.replay_messages(resume_from))
+        else:
+            messages = self._build_initial_messages(task, system, context)
+            if self._store is not None:
+                trajectory_id = self._store.start(task, system=system, context=context)
+
         escalations = 0
         cost = 0.0
         tools_used: list[str] = []
 
         while steps < self._max_iterations:
             steps += 1
+
+            # 0. Compress the trajectory if it has outgrown the context budget
+            #    (protects head + tail, summarizes the stale middle).
+            if self._compress_token_budget is not None and self._summarize is not None:
+                messages = compress_if_needed(
+                    messages,
+                    token_budget=self._compress_token_budget,
+                    summarize=self._summarize,
+                )
 
             # 1. Local generation with tools + logprobs (one call, both signals).
             resp = self._local.chat_with_logprobs(
@@ -145,12 +196,9 @@ class Executor:
 
             # 2. No tool call → the model answered in text. Task complete.
             if not resp.tool_calls:
-                return ExecutionResult(
-                    answer=resp.content,
-                    steps_taken=steps,
-                    escalations=escalations,
-                    tools_used=tools_used,
-                    cost_usd=cost,
+                return self._finish(
+                    trajectory_id, answer=resp.content, steps=steps,
+                    escalations=escalations, tools_used=tools_used, cost=cost,
                     stop_reason="done",
                 )
 
@@ -159,9 +207,12 @@ class Executor:
             threshold = self._router.get_threshold(category)
             tier = threshold.tier_for(resp.avg_logprob)
 
-            # 3. Resolve the tier into the tool call we actually run.
+            # 3. Resolve the tier into the tool call we actually run. Once the
+            #    escalation budget is spent, uncertain steps stay local.
+            allow_escalation = escalations < self._max_escalations
             chosen, chosen_resp, escalated = self._route_step(
                 tier, proposed, resp, messages, schemas, emit,
+                allow_escalation=allow_escalation,
             )
             if escalated:
                 escalations += 1
@@ -192,20 +243,40 @@ class Executor:
                 name=chosen.name,
             ))
 
-            # 5. Record the routing outcome. A dispatched tool that didn't
+            # 5. Checkpoint this iteration (committed immediately, so a crash on
+            #    the next step resumes from here).
+            if self._store is not None and trajectory_id is not None:
+                self._store.record_step(trajectory_id, StepRecord(
+                    step_index=steps, category=category, tier=actual_tier.value,
+                    avg_logprob=resp.avg_logprob, tool_name=chosen.name,
+                    tool_arguments=chosen.arguments, tool_result=result_json,
+                    assistant_content=chosen_resp.content,
+                ))
+
+            # 6. Record the routing outcome. A dispatched tool that didn't
             #    error is treated as a success for the router's posteriors.
             self._router.record_outcome(
                 category, actual_tier, success=_dispatch_ok(result_json),
             )
 
         # Budget exhausted without a text answer.
+        return self._finish(
+            trajectory_id, answer="", steps=steps, escalations=escalations,
+            tools_used=tools_used, cost=cost, stop_reason="budget_exhausted",
+        )
+
+    def _finish(
+        self, trajectory_id: Optional[str], *, answer: str, steps: int,
+        escalations: int, tools_used: list[str], cost: float, stop_reason: str,
+    ) -> ExecutionResult:
+        if self._store is not None and trajectory_id is not None:
+            self._store.finish(
+                trajectory_id, status=stop_reason, answer=answer,
+                escalations=escalations, tools_used=tools_used, cost_usd=cost,
+            )
         return ExecutionResult(
-            answer="",
-            steps_taken=steps,
-            escalations=escalations,
-            tools_used=tools_used,
-            cost_usd=cost,
-            stop_reason="budget_exhausted",
+            answer=answer, steps_taken=steps, escalations=escalations,
+            tools_used=tools_used, cost_usd=cost, stop_reason=stop_reason,
         )
 
     # ── Tier resolution ──────────────────────────────────────────
@@ -218,12 +289,20 @@ class Executor:
         messages: list[ChatMessage],
         schemas: list[dict],
         emit: Callable[[dict], None],
+        *,
+        allow_escalation: bool,
     ) -> tuple[ToolCall, ChatResponseWithLogprobs, bool]:
-        """Return (tool_call_to_run, its_response, escalated_to_cloud)."""
+        """Return (tool_call_to_run, its_response, escalated_to_cloud).
+
+        When ``allow_escalation`` is False (escalation budget spent), a Tier 3
+        or a Tier 2 disagreement runs the local proposal instead of escalating.
+        """
         if tier is Tier.LOCAL:
             return proposed, proposed_resp, False
 
         if tier is Tier.CLOUD:
+            if not allow_escalation:
+                return proposed, proposed_resp, False
             return self._escalate(proposed, proposed_resp, messages, schemas, emit)
 
         # Tier 2 — verify via self-consistency at a small temperature.
@@ -235,6 +314,8 @@ class Executor:
             return proposed, proposed_resp, False
 
         emit({"type": "verify", "result": "disagreement", "tool": proposed.name})
+        if not allow_escalation:
+            return proposed, proposed_resp, False
         return self._escalate(proposed, proposed_resp, messages, schemas, emit)
 
     def _escalate(
@@ -252,9 +333,10 @@ class Executor:
             return proposed, proposed_resp, False
 
         emit({"type": "cloud_call", "tool": proposed.name})
-        cloud_resp = self._cloud.chat_with_logprobs(
-            messages, tools=schemas, temperature=0.0,
-        )
+        cloud_opts: dict[str, Any] = {"tools": schemas, "temperature": 0.0}
+        if self._cloud_cache_ttl:
+            cloud_opts["cache_ttl"] = self._cloud_cache_ttl
+        cloud_resp = self._cloud.chat_with_logprobs(messages, **cloud_opts)
         if not cloud_resp.tool_calls:
             # Cloud declined to call a tool. Trust the local proposal rather
             # than stalling the loop; the text answer is not actionable here.

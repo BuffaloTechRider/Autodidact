@@ -266,9 +266,18 @@ class OpenAICompatBackend:
     def _common_kwargs(
         self, messages: "list[ChatMessage]", opts: dict,
     ) -> dict[str, Any]:
+        wire = [_message_to_tool_dict(m) for m in messages]
+        # Opt-in Anthropic prompt caching: only when the caller passes a TTL
+        # (the executor does so only for Anthropic-compatible cloud endpoints).
+        # Strict OpenAI rejects unknown fields, so this must never be default.
+        cache_ttl = opts.get("cache_ttl")
+        if cache_ttl:
+            from autodidact.prompt_cache import apply_anthropic_cache_control
+
+            wire = apply_anthropic_cache_control(wire, cache_ttl=cache_ttl)
         kwargs: dict[str, Any] = {
             "model": self.config.model,
-            "messages": [_message_to_tool_dict(m) for m in messages],
+            "messages": wire,
         }
         if "max_tokens" in opts:
             kwargs["max_tokens"] = int(opts["max_tokens"])
