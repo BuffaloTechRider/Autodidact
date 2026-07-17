@@ -51,6 +51,27 @@ class ToolLLM(Protocol):
         ...
 
 
+# Task-entry memory tier (FR-1): given the task text, return the best stored
+# answer if there's a fresh, high-similarity hit — else None. Backed by the
+# Agent's knowledge store; the executor stays ignorant of storage details.
+@dataclass
+class MemoryHit:
+    """A fresh, high-similarity task-level answer from the knowledge store."""
+
+    answer: str
+    similarity: float
+    source_question: str
+
+
+MemoryProbe = Callable[[str], Optional[MemoryHit]]
+
+
+# Per-step GSA pre-gate (FR-1): given the running messages, return p_yes — the
+# local model's own estimate that it can handle the next action. Below the
+# threshold, the step escalates before wasting a local generation.
+GsaProbe = Callable[[list[ChatMessage]], Optional[float]]
+
+
 ProgressCallback = Optional[Callable[[dict], None]]
 
 
@@ -66,7 +87,7 @@ class ExecutionResult:
     escalations: int
     tools_used: list[str] = field(default_factory=list)
     cost_usd: float = 0.0
-    stop_reason: str = "done"  # "done" | "budget_exhausted" | "no_local_model"
+    stop_reason: str = "done"  # "done" | "memory" | "budget_exhausted" | "no_local_model"
 
 
 # ── Executor ─────────────────────────────────────────────────────
@@ -108,6 +129,9 @@ class Executor:
         store: Optional[TrajectoryStore] = None,
         compress_token_budget: Optional[int] = None,
         summarize: Optional[Summarizer] = None,
+        memory: Optional[MemoryProbe] = None,
+        gsa: Optional[GsaProbe] = None,
+        gsa_threshold: float = 0.55,
     ) -> None:
         self._local = local
         self._cloud = cloud
@@ -128,6 +152,13 @@ class Executor:
         # Optional: persist each iteration for resume + learning. None = the
         # loop runs in memory only (unit tests, ephemeral runs).
         self._store = store
+        # FR-1 memory tier: task-entry short-circuit against the knowledge
+        # store. None = no memory tier (executor is then 3-tier, as before).
+        self._memory = memory
+        # FR-1 GSA pre-gate: per-step "can local handle this?" probe. Escalates
+        # hopeless steps before paying for a local generation. None = disabled.
+        self._gsa = gsa
+        self._gsa_threshold = gsa_threshold
 
     def execute(
         self,
@@ -147,6 +178,22 @@ class Executor:
                 escalations=0,
                 stop_reason="no_local_model",
             )
+
+        # Tier 0 — memory (FR-1): a fresh, high-similarity hit for the whole
+        # task short-circuits the loop with the stored answer, at $0. Only on a
+        # fresh start (a resume already has committed work to continue).
+        if self._memory is not None and resume_from is None:
+            hit = self._memory(task)
+            if hit is not None:
+                emit({
+                    "type": "memory_hit",
+                    "similarity": hit.similarity,
+                    "source": hit.source_question,
+                })
+                return ExecutionResult(
+                    answer=hit.answer, steps_taken=0, escalations=0,
+                    stop_reason="memory",
+                )
 
         schemas = self._tools.get_schemas()
 
@@ -189,12 +236,29 @@ class Executor:
                     summarize=self._summarize,
                 )
 
-            # 1. Local generation with tools + logprobs (one call, both signals).
-            resp = self._local.chat_with_logprobs(
-                messages, tools=schemas, temperature=0.0,
-            )
+            # 1. GSA pre-gate (FR-1): probe "can local handle this step?" before
+            #    generating. A veto escalates the step straight to cloud, so we
+            #    don't pay for a local generation the model predicts will fail.
+            gsa_escalated = False
+            resp: Optional[ChatResponseWithLogprobs] = None
+            if (self._gsa is not None and self._cloud is not None
+                    and escalations < self._max_escalations):
+                p_yes = self._gsa(messages)
+                if p_yes is not None and p_yes < self._gsa_threshold:
+                    emit({"type": "gsa_check", "p_yes": p_yes, "escalate": True})
+                    resp = self._cloud.chat_with_logprobs(
+                        messages, **self._cloud_opts(schemas),
+                    )
+                    gsa_escalated = True
 
-            # 2. No tool call → the model answered in text. Task complete.
+            # 2. Local generation with tools + logprobs (one call, both signals).
+            #    Skipped when the GSA gate already escalated this step to cloud.
+            if resp is None:
+                resp = self._local.chat_with_logprobs(
+                    messages, tools=schemas, temperature=0.0,
+                )
+
+            # 3. No tool call → the model answered in text. Task complete.
             if not resp.tool_calls:
                 return self._finish(
                     trajectory_id, answer=resp.content, steps=steps,
@@ -204,16 +268,21 @@ class Executor:
 
             proposed = resp.tool_calls[0]
             category = self._tools.toolset_of(proposed.name) or "default"
-            threshold = self._router.get_threshold(category)
-            tier = threshold.tier_for(resp.avg_logprob)
 
-            # 3. Resolve the tier into the tool call we actually run. Once the
-            #    escalation budget is spent, uncertain steps stay local.
-            allow_escalation = escalations < self._max_escalations
-            chosen, chosen_resp, escalated = self._route_step(
-                tier, proposed, resp, messages, schemas, emit,
-                allow_escalation=allow_escalation,
-            )
+            # 4. Resolve the tier into the tool call we actually run. A GSA
+            #    escalation is already a cloud call; otherwise route on the
+            #    logprob tier (once the budget is spent, uncertain steps stay
+            #    local).
+            if gsa_escalated:
+                tier = Tier.CLOUD
+                chosen, chosen_resp, escalated = proposed, resp, True
+            else:
+                tier = self._router.get_threshold(category).tier_for(resp.avg_logprob)
+                allow_escalation = escalations < self._max_escalations
+                chosen, chosen_resp, escalated = self._route_step(
+                    tier, proposed, resp, messages, schemas, emit,
+                    allow_escalation=allow_escalation,
+                )
             if escalated:
                 escalations += 1
                 cost += self._estimate_cost(
@@ -223,7 +292,7 @@ class Executor:
             else:
                 actual_tier = Tier.LOCAL if tier is Tier.LOCAL else Tier.VERIFY
 
-            # 4. Dispatch the chosen tool call and append its result.
+            # 5. Dispatch the chosen tool call and append its result.
             result_json = self._tools.dispatch(chosen.name, chosen.arguments)
             tools_used.append(chosen.name)
             emit({
@@ -243,7 +312,7 @@ class Executor:
                 name=chosen.name,
             ))
 
-            # 5. Checkpoint this iteration (committed immediately, so a crash on
+            # 6. Checkpoint this iteration (committed immediately, so a crash on
             #    the next step resumes from here).
             if self._store is not None and trajectory_id is not None:
                 self._store.record_step(trajectory_id, StepRecord(
@@ -253,7 +322,7 @@ class Executor:
                     assistant_content=chosen_resp.content,
                 ))
 
-            # 6. Record the routing outcome. A dispatched tool that didn't
+            # 7. Record the routing outcome. A dispatched tool that didn't
             #    error is treated as a success for the router's posteriors.
             self._router.record_outcome(
                 category, actual_tier, success=_dispatch_ok(result_json),
@@ -333,15 +402,20 @@ class Executor:
             return proposed, proposed_resp, False
 
         emit({"type": "cloud_call", "tool": proposed.name})
-        cloud_opts: dict[str, Any] = {"tools": schemas, "temperature": 0.0}
-        if self._cloud_cache_ttl:
-            cloud_opts["cache_ttl"] = self._cloud_cache_ttl
-        cloud_resp = self._cloud.chat_with_logprobs(messages, **cloud_opts)
+        cloud_resp = self._cloud.chat_with_logprobs(messages, **self._cloud_opts(schemas))
         if not cloud_resp.tool_calls:
             # Cloud declined to call a tool. Trust the local proposal rather
             # than stalling the loop; the text answer is not actionable here.
             return proposed, proposed_resp, False
         return cloud_resp.tool_calls[0], cloud_resp, True
+
+    def _cloud_opts(self, schemas: list[dict]) -> dict[str, Any]:
+        """Cloud call options, with prompt caching on the stable prefix when
+        configured (Anthropic). Shared by the GSA gate and _escalate."""
+        opts: dict[str, Any] = {"tools": schemas, "temperature": 0.0}
+        if self._cloud_cache_ttl:
+            opts["cache_ttl"] = self._cloud_cache_ttl
+        return opts
 
     # ── Message construction ─────────────────────────────────────
 

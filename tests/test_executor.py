@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 
-from autodidact.executor import Executor, ExecutionResult
+from autodidact.executor import Executor, ExecutionResult, MemoryHit
 from autodidact.llm_client import ChatResponseWithLogprobs, ToolCall
 from autodidact.routing.step_router import FixedThresholdRouter, Threshold, Tier
 from autodidact.tools.registry import ToolRegistry
@@ -188,6 +188,134 @@ def test_tier3_without_cloud_falls_back_to_local():
     ex = Executor(local=local, cloud=None, tools=reg, router=FixedThresholdRouter())
 
     res = ex.execute("do the thing")
+
+    assert res.escalations == 0
+    assert reg._test_calls == [{"value": "local"}]
+
+
+# ── Tier 0: task-entry memory short-circuit (FR-1) ───────────────
+
+
+def test_memory_hit_short_circuits_before_loop():
+    reg = _registry()
+    local = ScriptedLLM([])  # must never be called on a memory hit
+    events: list[dict] = []
+    hit = MemoryHit(answer="cached answer", similarity=0.91, source_question="prior task")
+
+    ex = Executor(
+        local=local, cloud=None, tools=reg, router=FixedThresholdRouter(),
+        memory=lambda task: hit,
+    )
+    res = ex.execute("do the thing", on_progress=events.append)
+
+    assert res.answer == "cached answer"
+    assert res.steps_taken == 0
+    assert res.stop_reason == "memory"
+    assert local.calls == []  # loop never ran
+    assert any(e["type"] == "memory_hit" for e in events)
+
+
+def test_memory_miss_falls_through_to_loop():
+    reg = _registry()
+    local = ScriptedLLM([
+        _tool_resp("echo", {"value": "hi"}, avg_logprob=-0.05),
+        _text_resp("done"),
+    ])
+    ex = Executor(
+        local=local, cloud=None, tools=reg, router=FixedThresholdRouter(),
+        memory=lambda task: None,  # no hit
+    )
+    res = ex.execute("do the thing")
+
+    assert res.stop_reason == "done"
+    assert res.steps_taken == 2
+
+
+def test_memory_not_consulted_on_resume():
+    # A resume has committed work to continue; re-answering from memory would
+    # discard it. The probe must not fire.
+    reg = _registry()
+    local = ScriptedLLM([_text_resp("finished")])
+    probe_calls: list[str] = []
+
+    class _OneStepStore:
+        def header(self, tid):
+            return {"task": "t", "system": None, "context": None}
+        def load_steps(self, tid):
+            return []
+        def replay_messages(self, tid):
+            return []
+        def finish(self, *a, **k):
+            pass
+
+    ex = Executor(
+        local=local, cloud=None, tools=reg, router=FixedThresholdRouter(),
+        store=_OneStepStore(), memory=lambda task: probe_calls.append(task) or None,
+    )
+    ex.execute("ignored", resume_from="traj-1")
+
+    assert probe_calls == []  # memory tier skipped on resume
+
+
+# ── GSA pre-gate per step (FR-1) ─────────────────────────────────
+
+
+def test_gsa_veto_escalates_step_without_local_generation():
+    reg = _registry()
+    # Local would be Tier 1 if it ran — but the GSA gate vetoes first, so the
+    # step escalates to cloud and the local model is never called this turn.
+    local = ScriptedLLM([_text_resp("done")])  # only the completion turn
+    cloud = ScriptedLLM([
+        _tool_resp("echo", {"value": "cloud"}, avg_logprob=-0.01),
+    ])
+    events: list[dict] = []
+
+    # Veto the first step (escalates to cloud), then pass so the completion
+    # turn runs locally against the one scripted local response.
+    gsa_scores = iter([0.10, 0.90])
+
+    ex = Executor(
+        local=local, cloud=cloud, tools=reg, router=FixedThresholdRouter(),
+        gsa=lambda messages: next(gsa_scores), gsa_threshold=0.55,
+    )
+    res = ex.execute("hard task", on_progress=events.append)
+
+    assert res.escalations == 1
+    assert reg._test_calls == [{"value": "cloud"}]
+    # Local ran once (the completion turn), not for the vetoed step.
+    assert len(local.calls) == 1
+    assert any(e["type"] == "gsa_check" and e["escalate"] for e in events)
+
+
+def test_gsa_pass_routes_on_logprob_tier():
+    reg = _registry()
+    local = ScriptedLLM([
+        _tool_resp("echo", {"value": "local"}, avg_logprob=-0.05),  # Tier 1
+        _text_resp("done"),
+    ])
+    cloud = ScriptedLLM([])  # must not be consulted when GSA passes + Tier 1
+    ex = Executor(
+        local=local, cloud=cloud, tools=reg, router=FixedThresholdRouter(),
+        gsa=lambda messages: 0.90, gsa_threshold=0.55,  # p_yes >= threshold → pass
+    )
+    res = ex.execute("easy task")
+
+    assert res.escalations == 0
+    assert reg._test_calls == [{"value": "local"}]
+
+
+def test_gsa_gate_inert_without_cloud():
+    # No cloud target → gate is moot; the local proposal runs as normal.
+    reg = _registry()
+    local = ScriptedLLM([
+        _tool_resp("echo", {"value": "local"}, avg_logprob=-0.05),
+        _text_resp("done"),
+    ])
+    ex = Executor(
+        local=local, cloud=None, tools=reg, router=FixedThresholdRouter(),
+        gsa=lambda messages: 0.01,  # would veto, but no cloud to escalate to
+    )
+    res = ex.execute("task")
 
     assert res.escalations == 0
     assert reg._test_calls == [{"value": "local"}]
