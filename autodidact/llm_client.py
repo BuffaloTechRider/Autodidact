@@ -68,12 +68,33 @@ class LLMConfig(BaseModel):
     max_retries: int = 6
 
 
+class ToolCall(BaseModel):
+    """A tool invocation the model asked for.
+
+    ``arguments`` is the parsed argument object (already JSON-decoded). ``id``
+    correlates the call with its result message on the next turn; for backends
+    that don't supply one (Ollama), we synthesize a stable per-response id.
+    """
+
+    id: str
+    name: str
+    arguments: dict = {}
+
+
 @dataclass
 class ChatMessage:
-    """One turn of a chat. Internal — built by us, never parsed from untrusted input."""
+    """One turn of a chat. Internal — built by us, never parsed from untrusted input.
 
-    role: Literal["system", "user", "assistant"]
-    content: str
+    ``tool_calls`` is set on an assistant turn that invoked tools; ``tool_call_id``
+    and ``name`` are set on a ``role="tool"`` turn carrying a tool's result. All
+    three default to None so ordinary text turns are unchanged.
+    """
+
+    role: Literal["system", "user", "assistant", "tool"]
+    content: str = ""
+    tool_calls: Optional[list[ToolCall]] = None
+    tool_call_id: Optional[str] = None
+    name: Optional[str] = None
 
 
 class ChatResponse(BaseModel):
@@ -84,6 +105,7 @@ class ChatResponse(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
     latency_ms: int = 0
+    tool_calls: list[ToolCall] = []
 
 
 class ChatResponseWithLogprobs(ChatResponse):
@@ -288,6 +310,7 @@ __all__ = [
     "LLMClient",
     "LLMClientError",
     "LLMConfig",
+    "ToolCall",
     # Internal helpers re-exported for tests + direct imports.
     "_BedrockThrottleError",
     "_THINK_TAG_RE",

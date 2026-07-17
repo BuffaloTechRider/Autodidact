@@ -39,6 +39,15 @@ class BedrockBackend:
     def chat(self, messages: "list[ChatMessage]", **opts: Any) -> "ChatResponse":
         from autodidact.llm_client import ChatResponse, LLMClientError
 
+        if opts.get("tools"):
+            # Bedrock Converse tool calling (toolConfig / toolUse blocks) is a
+            # planned follow-up; not wired yet. Fail loudly rather than silently
+            # dropping the tools and returning an untooled answer.
+            raise LLMClientError(
+                "tool calling is not yet supported on the Bedrock backend; "
+                "use the Ollama or OpenAI-compatible provider for tool use"
+            )
+
         client = self._get_client()
         system, converse_messages = self._to_messages(messages)
         inference_config: dict[str, Any] = {}

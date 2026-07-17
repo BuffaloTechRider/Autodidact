@@ -122,6 +122,51 @@ def _with_retries(
     ) from last_err
 
 
+# ── Tool-calling message serialization ──────────────────────────
+#
+# Ollama's /api/chat and the OpenAI Chat Completions API accept the same
+# message shape for tool calling: an assistant turn carries a `tool_calls`
+# list (each with a JSON-string `arguments`), and a tool-result turn uses
+# role="tool" with a `tool_call_id`. This helper serializes our internal
+# ChatMessage into that shared shape so both backends reuse it.
+
+
+def _message_to_tool_dict(m: "ChatMessage") -> dict:
+    """Serialize a ChatMessage to the OpenAI/Ollama chat-message dict shape.
+
+    Plain text turns become ``{"role", "content"}``. An assistant turn with
+    ``tool_calls`` and a ``role="tool"`` result turn are expanded to the
+    function-calling wire format (arguments serialized to a JSON string).
+    """
+    import json as _json
+
+    if m.role == "tool":
+        return {
+            "role": "tool",
+            "content": m.content,
+            "tool_call_id": m.tool_call_id or "",
+        }
+
+    if m.role == "assistant" and m.tool_calls:
+        return {
+            "role": "assistant",
+            "content": m.content,
+            "tool_calls": [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.name,
+                        "arguments": _json.dumps(tc.arguments),
+                    },
+                }
+                for tc in m.tool_calls
+            ],
+        }
+
+    return {"role": m.role, "content": m.content}
+
+
 # ── Answer extraction (handles thinking models) ──────────────────
 #
 # Three response shapes seen in the wild:
@@ -318,5 +363,6 @@ __all__ = [
     "_consume_ollama_stream",
     "_consume_ollama_stream_plain",
     "_extract_answer",
+    "_message_to_tool_dict",
     "_with_retries",
 ]
