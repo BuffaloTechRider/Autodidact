@@ -1,19 +1,21 @@
-# Autodidact v2.0 — Design Document
+# Autodidact v2.0 — Full Design (deep-dive appendix)
 
 **The Apprentice Agent: An AI That Learns to Do, Not Just Answer**
 
-> ℹ️ **This is the v2.0 (apprentice-agent) design vision. Some module paths here
-> are aspirational and differ from what was actually built** — trust
-> `docs/lifecycle/03-design.md` for the authoritative component→path→status map.
-> Known deltas as built:
+> ℹ️ **Design appendix `03a` of the lifecycle SSOT.** This is the full v2.0
+> (apprentice-agent) design narrative. The traceable index —
+> requirement→component→path→**status** — is [`03-design.md`](03-design.md); trust
+> it over any path named here. Some module paths below are aspirational and differ
+> from what was actually built:
 > - Routing lives in `autodidact/routing/stages.py`, **not** `router.py`.
 > - `knowledge_store.py` is still in use; `knowledge_memory.py` was not created.
 > - `executor.py`, `planner.py`, and `skills/` are **not yet built** (Phases B/C).
 > - The tool registry and `terminal.py`/`file_ops.py` are **not in the tree**
 >   (only stale bytecode remains); the backend `tools` param IS done (`dfaaa54`).
 >
-> "v2.0" in this repo means the **apprentice agent** (this doc). The Hive network
-> referenced as "v2.0" in `ROADMAP.md`/`requirements.md` is a later, separate phase.
+> **Scope:** "v2.0" in this repo means the **apprentice agent** (this doc). The
+> Hive network, tiered hierarchy, and LoRA consolidation are later phases, tracked
+> as vision-only in [`../ROADMAP.md`](../ROADMAP.md) — not part of this SSOT.
 
 ---
 

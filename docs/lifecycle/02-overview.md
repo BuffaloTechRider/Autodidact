@@ -12,7 +12,7 @@ stored procedures. Routing signals are model-agnostic (GSA pre-screen,
 self-consistency, knowledge verification) with per-category thresholds adapted
 online via Thompson Sampling.
 
-Full design: [`../DESIGN-V2.md`](../DESIGN-V2.md).
+Full design: [`03a-design-full.md`](03a-design-full.md).
 
 ## Candidate approaches considered
 

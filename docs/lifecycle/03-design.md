@@ -6,9 +6,10 @@
 > anything unmapped is scope creep or a gap.
 >
 > This is the lifecycle **index**. The full, living design is
-> [`../DESIGN-V2.md`](../DESIGN-V2.md); deep-dives in `../RAG-PIPELINE.md`,
-> `../HALLUCINATION-PROBLEM.md`. Consider the `codebase-design` skill when shaping
-> a new module's seams.
+> [`03a-design-full.md`](03a-design-full.md); deep-dives in
+> [`03b-rag-pipeline.md`](03b-rag-pipeline.md) and
+> [`03c-hallucination.md`](03c-hallucination.md). Consider the `codebase-design`
+> skill when shaping a new module's seams.
 
 ## Component map (requirement → component → status)
 
@@ -57,6 +58,10 @@ task ──▶ planner ──▶ [step] ──▶ executor (ReAct)
 **Chosen:** SQLite + structured skills, compact index + on-demand view.
 **Why:** FR-4 requires retrieval by semantic match; Markdown-only can't satisfy it.
 Borrows Hermes' compact-index idea without its Markdown-only storage.
+**Match thresholds (RESOLVED 2026-07):** `find(query)` uses the `agent.py`
+memory-tier bars — `>= 0.80` follow skill (FR-4 reuse), `0.60–0.80` load as
+reference hint only, `< 0.60` treat as new task (FR-3). Reuses
+`MEMORY_DIRECT_THRESHOLD` / `MEMORY_CONTEXT_THRESHOLD`.
 **Serves:** FR-3, FR-4, NFR-2
 
 ### Component: skill-invalidation policy (resolves FR-4 vs NFR-1)
@@ -65,9 +70,17 @@ Borrows Hermes' compact-index idea without its Markdown-only storage.
 **Options considered:**
 - Invalidate on first failure — simple, safe · one flaky run nukes a good skill
 - Success/failure counter + threshold — resilient to noise · needs tuning, slower to retire bad skills
-**Chosen:** OPEN — leaning counter-based via `CorrectionInvalidation` stage.
-**Why:** matches the existing routing stage; decide the threshold in Phase C
-against real reuse data. **Do not code Phase C until this is closed.**
+**Chosen (RESOLVED 2026-07):** counter-based, via the `CorrectionInvalidation` stage.
+- **Trust** (auto-use without cloud) at `success_count >= 2` — reuses config
+  `skills.min_success_for_trust: 2`.
+- **Flag** (disable auto-use, re-validate via cloud on next use) when
+  `failure_count >= 2` **OR** `failure_ratio > 0.5` over `>= 3` uses.
+- **Never delete** — only demote (Mem0/Hermes pattern). A flagged skill routes to
+  cloud, so NFR-1 holds.
+**Why:** matches the existing routing stage and the memory-tier vocabulary; the
+double-failure / ratio guard stops one flaky run from retiring a good skill while
+retiring a genuinely broken one within a few uses. Thresholds may be re-tuned in
+Phase C against real reuse data, but Phase C is **no longer blocked** on this.
 **Serves:** FR-4, NFR-1
 
 ### Component: executor loop (Phase B)
