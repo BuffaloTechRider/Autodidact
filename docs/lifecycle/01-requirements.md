@@ -29,9 +29,21 @@
 - **Should:** FR-3, FR-4, NFR-2, NFR-3
 - **Could:** _(defer — see `docs/FUTURE-LEARNINGS.md`)_
 
-## Conflicts / ambiguities to resolve
+## Resolved decisions (were conflicts / ambiguities)
 
-- FR-4 (reuse without escalating) vs NFR-1 (no accuracy regression): a stale or
-  wrong skill trades cost for correctness. **Open:** what's the skill-invalidation
-  policy? _(decide in design)_
-- "Similar task" (FR-3/FR-4) needs a concrete similarity threshold to be testable.
+- **FR-4 vs NFR-1 — skill-invalidation policy (RESOLVED 2026-07, counter-based):**
+  A skill becomes **trusted** (usable without cloud escalation) at
+  `success_count >= 2` (matches config `skills.min_success_for_trust: 2`). On
+  failure, `failure_count += 1`; the skill is **flagged** (auto-use disabled,
+  re-validated via cloud on next use) when `failure_count >= 2` **OR**
+  `failure_ratio > 0.5` over `>= 3` uses. Skills are **never deleted**, only
+  demoted (Mem0/Hermes pattern). This satisfies NFR-1: a flagged skill routes to
+  cloud, so reuse never regresses accuracy. Implemented via the
+  `CorrectionInvalidation` stage. See `03-design.md` → skill-invalidation record.
+- **FR-3/FR-4 — "similar task" threshold (RESOLVED 2026-07):** reuse the existing
+  memory-tier bars from `agent.py`. Skill match `>= 0.80`
+  (`MEMORY_DIRECT_THRESHOLD`) → load and follow the skill (FR-4 reuse path).
+  `0.60–0.80` (`MEMORY_CONTEXT_THRESHOLD`) → load skill as reference/plan hint,
+  route steps normally. `< 0.60` → new task, fresh learning (FR-3). Makes FR-3/FR-4
+  testable: a query at cosine `>= 0.80` to a stored skill resolves at local/memory
+  tier with 0 cloud calls.

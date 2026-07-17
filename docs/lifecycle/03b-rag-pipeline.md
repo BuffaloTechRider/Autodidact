@@ -3,7 +3,7 @@
 **Status:** Decision record. Living document.
 **Last updated:** 2026-05-13
 **Triggered by:** Live `autodidact learn .` failures on dense code (#PR-after-1.0.1).
-**Anchors:** `requirements.md` R1.1.9, `DESIGN-V2.md` §7, `ROADMAP.md` v1.1.
+**Anchors:** `03a-design-full.md` §7 (document synthesis). v1.1 items (R1.1.9 code-aware ingest, R1.1.10 scoped search) now live in `../ROADMAP.md` as future, not v2.0 scope.
 
 ---
 
