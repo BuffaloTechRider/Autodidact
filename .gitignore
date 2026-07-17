@@ -16,3 +16,11 @@ data/
 autodidact.config.json
 coverage/
 .DS_Store
+
+# Experiment artifacts (large binaries / generated data — keep out of git)
+graphify-out/
+paper/
+paper-repo/
+results/experiment/
+results/learning_curve_v2.*
+results/routerbench_experiment.*

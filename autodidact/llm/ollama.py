@@ -115,6 +115,7 @@ class OllamaBackend:
     ) -> "ChatResponseWithLogprobs":
         from autodidact.llm_client import ChatResponseWithLogprobs
 
+        tools = opts.pop("tools", None)
         options = self._options(opts)
         options.setdefault("num_predict", options.get("max_tokens", 256))
         top_logprobs_k = int(opts.pop("top_logprobs", 5))
@@ -127,6 +128,8 @@ class OllamaBackend:
             "top_logprobs": top_logprobs_k,
             "options": options,
         }
+        if tools:
+            body["tools"] = tools
         if think is not None:
             body["think"] = bool(think)
 
@@ -174,6 +177,7 @@ class OllamaBackend:
             logprobs=token_lps,
             avg_logprob=avg_lp,
             top_logprobs_by_position=top_lps,
+            tool_calls=_parse_ollama_tool_calls(message),
             had_thinking=bool(message.get("thinking"))
             or bool(_THINK_TAG_RE.search(message.get("content") or "")),
         )
