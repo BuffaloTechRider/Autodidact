@@ -162,6 +162,16 @@ class GsaConfig(BaseModel):
     threshold: float = Field(default=0.55, ge=0.0, le=1.0)
 
 
+class IngestConfig(BaseModel):
+    """Document ingestion settings (`autodidact learn`)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    # Parallel embedding workers. Embeds are IO-bound, so a small pool
+    # overlaps them with file parsing. 1 = serial.
+    workers: int = Field(default=4, ge=1)
+
+
 # ── Top-level AgentConfig ───────────────────────────────────────
 
 
@@ -175,6 +185,7 @@ class AgentConfig(BaseModel):
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     routing: RoutingConfig = Field(default_factory=RoutingConfig)
     gsa: GsaConfig = Field(default_factory=GsaConfig)
+    ingest: IngestConfig = Field(default_factory=IngestConfig)
 
     # ── Loading ─────────────────────────────────────────────────
 

@@ -73,6 +73,25 @@ class TestFromYamlHappyPath:
         assert cfg.local.model == "qwen3:8b"
         assert cfg.cloud is None  # no cloud section ⇒ local-only
 
+    def test_ingest_workers_default_and_override(self, tmp_path):
+        from autodidact.config import AgentConfig
+
+        # Omitted ⇒ default of 4.
+        p = self._write(tmp_path, """
+            local:
+              model: qwen3:8b
+        """)
+        assert AgentConfig.from_yaml(p).ingest.workers == 4
+
+        # Explicit value is honoured.
+        p = self._write(tmp_path, """
+            local:
+              model: qwen3:8b
+            ingest:
+              workers: 8
+        """)
+        assert AgentConfig.from_yaml(p).ingest.workers == 8
+
     def test_local_only_mode_with_empty_cloud_section(self, tmp_path):
         """Empty cloud section is treated as local-only, not as a config error.
 
@@ -293,6 +312,19 @@ class TestStrictValidation:
         with pytest.raises(ConfigError) as exc:
             AgentConfig.from_yaml(p)
         assert "threshold" in str(exc.value)
+
+    def test_ingest_workers_below_one_is_error(self, tmp_path):
+        from autodidact.config import AgentConfig, ConfigError
+
+        p = self._write(tmp_path, """
+            local:
+              model: qwen3:8b
+            ingest:
+              workers: 0
+        """)
+        with pytest.raises(ConfigError) as exc:
+            AgentConfig.from_yaml(p)
+        assert "workers" in str(exc.value)
 
     def test_unknown_fields_are_ignored(self, tmp_path):
         """Forward-compat: configs from a newer wizard with extra fields don't break."""
