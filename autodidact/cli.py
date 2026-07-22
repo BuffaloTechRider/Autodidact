@@ -186,6 +186,7 @@ def _agent_from_config(config: dict) -> Agent:
             embedding_dim=agent._config.embedding_dim,
             knowledge_store=agent.memory,
             extractor_client=extractor_client,
+            default_workers=cfg.ingest.workers,
         ))
     return agent
 
@@ -714,6 +715,10 @@ def learn(
     stats: bool = typer.Option(
         False, "--stats", help="Show ingestion stats instead of ingesting"
     ),
+    workers: Optional[int] = typer.Option(
+        None, "--workers", help="Parallel embedding workers (1 = serial). "
+        "Defaults to config ingest.workers.",
+    ),
     config_path: Optional[str] = typer.Option(None, "--config-path"),
 ) -> None:
     """Ingest documents to solve cold start (R9).
@@ -774,7 +779,7 @@ def learn(
             facts = evt.get("facts", 0)
             console.print(f"  ✦ {f} → {facts} facts learned", style="cyan")
 
-    result = agent.documents.ingest(target, on_progress=_progress)
+    result = agent.documents.ingest(target, workers=workers, on_progress=_progress)
 
     console.print("─── Ingestion Complete ───", style="bold green")
     console.print(f"  Files ingested:  {result.files_ingested}")

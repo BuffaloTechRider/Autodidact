@@ -224,6 +224,62 @@ class TestIngestion:
         assert len(chunks[0].embedding) == 32
 
 
+# ── Parallel ingestion (file-level thread pool) ──────────────────
+
+class TestParallelIngestion:
+    """Ingest fans read+chunk+embed across a thread pool; DB writes stay
+    on the calling thread. Results must match serial ingestion."""
+
+    def _write_tree(self, tmp_path, n_files=6):
+        for i in range(n_files):
+            # Long enough to split into several chunks per file.
+            (tmp_path / f"doc{i}.md").write_text(
+                f"Document {i}. " + ("word " * 400)
+            )
+
+    def test_parallel_matches_serial_counts(self, doc_store, tmp_path):
+        self._write_tree(tmp_path)
+        parallel = doc_store.ingest(tmp_path, workers=4)
+        parallel_count = doc_store.count()
+
+        # Re-ingest the same tree serially; dedup means counts should match.
+        serial = doc_store.ingest(tmp_path, workers=1)
+
+        assert parallel.files_ingested == serial.files_ingested == 6
+        assert parallel.chunks_created == serial.chunks_created
+        assert doc_store.count() == parallel_count  # dedup, not additive
+
+    def test_chunk_index_order_preserved(self, doc_store, tmp_path):
+        """A multi-chunk file keeps contiguous 0..n-1 indices under the pool."""
+        f = tmp_path / "big.md"
+        f.write_text("Section. " + ("word " * 1200))
+        doc_store.ingest(f, workers=4)
+
+        chunks = [c for c in doc_store.list_chunks() if c.source_file.endswith("big.md")]
+        indices = sorted(c.chunk_index for c in chunks)
+        assert indices == list(range(len(chunks)))
+
+    def test_default_workers_used_when_unspecified(self, db_conn, mock_embed_client, tmp_path):
+        """ingest() with no workers arg falls back to the store's default."""
+        from autodidact.document_store import DocumentStore
+        store = DocumentStore(
+            db_conn, mock_embed_client, embedding_dim=32, default_workers=1
+        )
+        self._write_tree(tmp_path, n_files=3)
+        result = store.ingest(tmp_path)  # no workers= → uses default_workers=1
+        assert result.files_ingested == 3
+
+    def test_progress_fires_once_per_file(self, doc_store, tmp_path):
+        self._write_tree(tmp_path, n_files=5)
+        seen: list[str] = []
+        doc_store.ingest(
+            tmp_path, workers=4,
+            on_progress=lambda e: seen.append(e["file"]) if e["type"] == "file_ingested" else None,
+        )
+        assert len(seen) == 5
+        assert len(set(seen)) == 5  # no file persisted twice
+
+
 # ── Deduplication ─────────────────────────────────────────────────
 
 class TestDeduplication:

@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -117,6 +118,19 @@ class IngestResult:
     chunks_created: int
     files_skipped: int = 0
     facts_synthesized: int = 0
+
+
+@dataclass
+class _PreparedFile:
+    """A file read, chunked, and embedded off the main thread — ready for the
+    main thread to persist. ``embedded`` is (chunk_index, content, embedding)
+    for chunks that embedded successfully; ``skipped`` marks a file the worker
+    could not read or that produced no chunks."""
+
+    file_path: Path
+    embedded: list[tuple[int, str, np.ndarray]]
+    total_chunks: int
+    skipped: bool = False
 
 
 # ── Tokenizer (BGE-large) for accurate cap enforcement ──────────
@@ -705,12 +719,15 @@ class DocumentStore:
         embedding_dim: int = 1024,
         knowledge_store=None,
         extractor_client: Optional[LLMClient] = None,
+        default_workers: int = 4,
     ) -> None:
         self.conn = conn
         self._embed_client = embed_client
         self._embedding_dim = embedding_dim
         self._knowledge_store = knowledge_store
         self._extractor_client = extractor_client
+        # Default parallelism for ingest() when the caller doesn't specify.
+        self._default_workers = max(1, default_workers)
 
     # ── Public API ────────────────────────────────────────────────
 
@@ -751,12 +768,50 @@ class DocumentStore:
             logger.warning("Skipping %s: %s", file_path, e)
             raise OSError(f"Failed to read {file_path}: {e}")
 
+    def _prepare_file(
+        self, file_path: Path, *, chunk_size: int, overlap: int
+    ) -> _PreparedFile:
+        """Read, chunk, and embed one file. Runs off the main thread and
+        touches no DB state — the embedding calls are the parallelizable work;
+        SQLite writes happen back on the main thread. Never raises: an
+        unreadable / empty file returns ``skipped=True``."""
+        try:
+            text = self._read_text_from_file(file_path)
+        except OSError as e:
+            logger.warning("Skipping %s: %s", file_path, e)
+            return _PreparedFile(file_path, [], 0, skipped=True)
+        except ImportError as e:
+            logger.warning("Skipping %s: %s", file_path, e)
+            logger.warning("To ingest this file type, install the required library and its dependencies: %s", e)
+            return _PreparedFile(file_path, [], 0, skipped=True)
+
+        # Prefer AST-aware chunking for code files; fall back to text splitter.
+        ext = file_path.suffix.lower()
+        chunks = chunk_code_ast(text, ext)
+        if chunks is None:
+            chunks = chunk_text(text, chunk_size=chunk_size, overlap=overlap)
+        if not chunks:
+            return _PreparedFile(file_path, [], 0, skipped=True)
+
+        embedded: list[tuple[int, str, np.ndarray]] = []
+        for i, chunk_content in enumerate(chunks):
+            try:
+                embedding = self._embed_client.embed(chunk_content)
+                embedded.append(
+                    (i, chunk_content, np.asarray(embedding, dtype=np.float32))
+                )
+            except Exception as e:
+                logger.warning("Failed to embed chunk %d of %s: %s", i, file_path, e)
+
+        return _PreparedFile(file_path, embedded, len(chunks))
+
     def ingest(
         self,
         path: Path | str,
         *,
         chunk_size: int = _DEFAULT_CHUNK_SIZE_TOKENS,
         overlap: int = 50,
+        workers: Optional[int] = None,
         on_progress: Optional[callable] = None,
     ) -> IngestResult:
         """Ingest a file or directory into the store.
@@ -764,58 +819,57 @@ class DocumentStore:
         Chunks each file, embeds each chunk, and persists rows in
         `document_chunks`. Re-ingesting a file replaces its existing chunks
         (R9 AC9 — deduplication on re-ingestion).
+
+        Reading, chunking, and embedding run across a `workers`-sized thread
+        pool (the embed calls are IO-bound, so threads overlap them with the
+        CPU work of parsing). SQLite writes stay on the calling thread — the
+        connection is single-writer — so the DB is never touched concurrently.
+        `workers` defaults to the store's configured default; pass 1 to
+        ingest serially.
         """
         path = Path(path)
         files_ingested = 0
         chunks_created = 0
         files_skipped = 0
 
-        for file_path in walk_files(path):
-            try:
-                text = self._read_text_from_file(file_path)
-            except OSError as e:
-                logger.warning("Skipping %s: %s", file_path, e)
-                files_skipped += 1
-                continue
-            except ImportError as e:
-                logger.warning("Skipping %s: %s", file_path, e)
-                logger.warning("To ingest this file type, install the required library and its dependencies: %s", e)
-                files_skipped += 1
-                continue
+        files = list(walk_files(path))
+        workers = max(1, workers if workers is not None else self._default_workers)
 
-            # Prefer AST-aware chunking for code files; fall back to text splitter.
-            ext = file_path.suffix.lower()
-            chunks = chunk_code_ast(text, ext)
-            if chunks is None:
-                chunks = chunk_text(text, chunk_size=chunk_size, overlap=overlap)
-            if not chunks:
+        def _persist(prepared: _PreparedFile) -> None:
+            nonlocal files_ingested, chunks_created, files_skipped
+            if prepared.skipped:
                 files_skipped += 1
-                continue
-
+                return
             # Deduplication: remove any existing chunks for this source file.
-            self._delete_chunks_for_file(str(file_path))
-
-            for i, chunk_content in enumerate(chunks):
-                try:
-                    embedding = self._embed_client.embed(chunk_content)
-                    self._insert_chunk(
-                        content=chunk_content,
-                        source_file=str(file_path),
-                        chunk_index=i,
-                        embedding=np.asarray(embedding, dtype=np.float32),
-                    )
-                    chunks_created += 1
-                except Exception as e:
-                    logger.warning("Failed to embed chunk %d of %s: %s", i, file_path, e)
-
+            self._delete_chunks_for_file(str(prepared.file_path))
+            for i, content, embedding in prepared.embedded:
+                self._insert_chunk(
+                    content=content,
+                    source_file=str(prepared.file_path),
+                    chunk_index=i,
+                    embedding=embedding,
+                )
+                chunks_created += 1
             files_ingested += 1
             if on_progress is not None:
                 on_progress({
                     "type": "file_ingested",
-                    "file": str(file_path),
-                    "chunks": len(chunks),
+                    "file": str(prepared.file_path),
+                    "chunks": prepared.total_chunks,
                     "total_files": files_ingested,
                 })
+
+        prepare = lambda fp: self._prepare_file(  # noqa: E731
+            fp, chunk_size=chunk_size, overlap=overlap
+        )
+        if workers == 1:
+            for file_path in files:
+                _persist(prepare(file_path))
+        else:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                # map preserves input order, so persistence is deterministic.
+                for prepared in pool.map(prepare, files):
+                    _persist(prepared)
 
         # Synthesis pass: extract key facts into the knowledge store.
         # Runs in a background thread so ingest returns immediately.
