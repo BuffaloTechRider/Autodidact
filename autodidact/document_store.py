@@ -17,6 +17,7 @@ chunking — only during embedding.
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -48,6 +49,12 @@ _TEXT_EXTENSIONS: frozenset[str] = frozenset({
 })
 
 _SUPPORTED_EXTENSIONS = _TEXT_EXTENSIONS | {".pdf", ".docx"}
+
+# Prose formats that carry markdown-style ``#`` heading structure. These route
+# through the heading-section-aware chunker (chunk_markdown) instead of the
+# blind sliding window, so a section stays intact and each chunk keeps its
+# heading trail. PDF/DOCX text arrives here too because docling emits Markdown.
+_MARKDOWN_EXTENSIONS: frozenset[str] = frozenset({".md", ".markdown", ".rst"})
 
 # Chars-per-token approximation (OpenAI's cl100k_base rule of thumb).
 # We chunk by characters for the fast path; only the cap-enforcement step
@@ -531,6 +538,203 @@ def chunk_text(
     return _enforce_cap(chunks, cap_chars)
 
 
+_HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
+
+
+def _is_table_delimiter(line: str) -> bool:
+    """True for a Markdown table delimiter row, e.g. ``|---|:--:|`` or ``---|---``.
+
+    A delimiter row contains only pipes, dashes, colons and spaces, and has at
+    least one dash. (A bare ``---`` horizontal rule can look the same; the table
+    detector below only tests this on the line *after* a pipe-bearing header,
+    which makes a false positive very unlikely in practice.)
+    """
+    s = line.strip()
+    return "-" in s and set(s) <= set("|-: ")
+
+
+def _segment_section_blocks(lines: list[str]) -> list[tuple[str, list[str]]]:
+    """Split a section body into ordered ``("prose"|"table", lines)`` blocks.
+
+    A table starts at a pipe-bearing line immediately followed by a delimiter
+    row, and runs while subsequent lines contain a pipe. Everything else is
+    prose. Keeping tables as their own blocks is what lets the caller treat a
+    table as an atomic unit instead of window-splitting it mid-row.
+    """
+    segments: list[tuple[str, list[str]]] = []
+    prose: list[str] = []
+    i, n = 0, len(lines)
+    while i < n:
+        if "|" in lines[i] and i + 1 < n and _is_table_delimiter(lines[i + 1]):
+            if prose:
+                segments.append(("prose", prose))
+                prose = []
+            table = [lines[i], lines[i + 1]]
+            j = i + 2
+            while j < n and "|" in lines[j]:
+                table.append(lines[j])
+                j += 1
+            segments.append(("table", table))
+            i = j
+        else:
+            prose.append(lines[i])
+            i += 1
+    if prose:
+        segments.append(("prose", prose))
+    return segments
+
+
+def _chunk_markdown_table(table_text: str, chunk_size: int) -> list[str]:
+    """Chunk one Markdown table, keeping it atomic when it fits.
+
+    A table under the target size is returned as a single chunk. A larger table
+    is split **by row groups**, and the header row + delimiter row are
+    **repeated at the top of every piece** — so a chunk of rows lifted from the
+    middle of a long table still carries its column names (the same
+    "prepend the structural header" trick used for headings and code
+    signatures). Falls back to a plain split if no delimiter row is found.
+    """
+    char_target = chunk_size * _CHARS_PER_TOKEN
+    if len(table_text) <= char_target:
+        return [table_text]
+
+    lines = table_text.split("\n")
+    header_lines: list[str] = []
+    data_start = 0
+    for idx, line in enumerate(lines):
+        if _is_table_delimiter(line):
+            header_lines = lines[: idx + 1]  # column header row + delimiter row
+            data_start = idx + 1
+            break
+    if not header_lines:
+        # Not a well-formed table — don't pretend; split as text without overlap.
+        return chunk_text(table_text, chunk_size=chunk_size, overlap=0)
+
+    header = "\n".join(header_lines)
+    rows = [ln for ln in lines[data_start:] if ln.strip()]
+    pieces: list[str] = []
+    buffer: list[str] = []
+    buffer_chars = len(header)
+    for row in rows:
+        row_chars = len(row) + 1
+        if buffer and buffer_chars + row_chars > char_target:
+            pieces.append(header + "\n" + "\n".join(buffer))
+            buffer = []
+            buffer_chars = len(header)
+        buffer.append(row)
+        buffer_chars += row_chars
+    if buffer:
+        pieces.append(header + "\n" + "\n".join(buffer))
+    return pieces
+
+
+def _chunk_section_body(section_text: str, chunk_size: int, overlap: int) -> list[str]:
+    """Chunk an oversized section body, table-aware.
+
+    Prose runs go through the boundary-aware window (``chunk_text``); table
+    blocks are kept atomic (or row-split with a repeated header). This is only
+    reached when a section is too large to keep whole, so a small prose run
+    between two tables is emitted intact rather than needlessly overlapped.
+    """
+    char_target = chunk_size * _CHARS_PER_TOKEN
+    pieces: list[str] = []
+    for kind, seg_lines in _segment_section_blocks(section_text.split("\n")):
+        seg = "\n".join(seg_lines).strip()
+        if not seg:
+            continue
+        if kind == "table":
+            pieces.extend(_chunk_markdown_table(seg, chunk_size))
+        elif len(seg) <= char_target:
+            pieces.append(seg)
+        else:
+            pieces.extend(chunk_text(seg, chunk_size=chunk_size, overlap=overlap))
+    return pieces
+
+
+def chunk_markdown(
+    text: str,
+    *,
+    chunk_size: int = _DEFAULT_CHUNK_SIZE_TOKENS,
+    overlap: int = 50,
+) -> list[str]:
+    """Chunk markdown-structured prose on ``#`` headings, section-aware.
+
+    Each heading starts a new section; a section that fits in one chunk stays
+    intact (no mid-section cut — the failure mode blind sliding-window chunking
+    caused). A section larger than the target is split with ``chunk_text`` and
+    every piece is prefixed with its **heading trail** (the enclosing H1/H2/…
+    path) so a chunk lifted out of the middle of a long section still says what
+    it's about. Content before the first heading is chunked as a headless
+    section.
+
+    Within an oversized section, Markdown **tables are kept atomic** (or, if a
+    table alone exceeds the target, row-split with the column header repeated on
+    every piece) rather than window-split mid-row. Falls back to ``chunk_text``
+    when the text has no headings at all, so plain prose isn't penalized.
+    """
+    text = text.strip()
+    if not text:
+        return []
+
+    lines = text.split("\n")
+    # (heading_trail, body_lines) sections. heading_trail is the list of
+    # enclosing headings, most-general first, e.g. ["# Guide", "## Deploy"].
+    sections: list[tuple[list[str], list[str]]] = []
+    trail: list[tuple[int, str]] = []  # (level, "## text") stack
+    current_body: list[str] = []
+    current_trail: list[str] = []
+
+    def _flush(body: list[str], heading_trail: list[str]) -> None:
+        if any(line.strip() for line in body):
+            sections.append((list(heading_trail), list(body)))
+
+    for line in lines:
+        m = _HEADING_RE.match(line)
+        if m is None:
+            current_body.append(line)
+            continue
+        # A new heading closes the current section.
+        _flush(current_body, current_trail)
+        current_body = [line]  # the heading line leads its own section body
+        level = len(m.group(1))
+        # Pop the stack to this heading's level, then push it.
+        while trail and trail[-1][0] >= level:
+            trail.pop()
+        trail.append((level, line.strip()))
+        current_trail = [h for _, h in trail]
+    _flush(current_body, current_trail)
+
+    if not sections:
+        # No headings — nothing to be section-aware about.
+        return chunk_text(text, chunk_size=chunk_size, overlap=overlap)
+
+    char_target = chunk_size * _CHARS_PER_TOKEN
+    out: list[str] = []
+    for heading_trail, body in sections:
+        section_text = "\n".join(body).strip()
+        if not section_text:
+            continue
+        if len(section_text) <= char_target:
+            out.append(section_text)
+            continue
+        # Oversized section: split table-aware (tables stay atomic / row-split
+        # with a repeated column header; prose uses the boundary window), then
+        # prepend the heading trail to every piece after the first (the first
+        # already opens with its heading).
+        header = "\n".join(heading_trail)
+        header_budget = int(len(header) / _CHARS_PER_TOKEN) + 4
+        target = max(200, chunk_size - header_budget)
+        pieces = _chunk_section_body(section_text, chunk_size=target, overlap=overlap)
+        for i, piece in enumerate(pieces):
+            if i == 0 or not header:
+                out.append(piece)
+            else:
+                out.append(header + "\n\n" + piece)
+
+    # Hard cap still applies (heading-prefixed pieces can nudge over).
+    return _enforce_cap(out, _SAFE_CHUNK_TOKEN_CAP * _CHARS_PER_TOKEN)
+
+
 def _enforce_cap(chunks: list[str], cap_chars: int) -> list[str]:
     """Ensure no chunk exceeds the BGE 480-token cap.
 
@@ -785,11 +989,16 @@ class DocumentStore:
             logger.warning("To ingest this file type, install the required library and its dependencies: %s", e)
             return _PreparedFile(file_path, [], 0, skipped=True)
 
-        # Prefer AST-aware chunking for code files; fall back to text splitter.
+        # Chunker by content type: AST for code, heading-section-aware for
+        # markdown-structured prose (incl. docling's Markdown from PDF/DOCX),
+        # blind sliding-window for everything else.
         ext = file_path.suffix.lower()
         chunks = chunk_code_ast(text, ext)
         if chunks is None:
-            chunks = chunk_text(text, chunk_size=chunk_size, overlap=overlap)
+            if ext in _MARKDOWN_EXTENSIONS or ext in (".pdf", ".docx"):
+                chunks = chunk_markdown(text, chunk_size=chunk_size, overlap=overlap)
+            else:
+                chunks = chunk_text(text, chunk_size=chunk_size, overlap=overlap)
         if not chunks:
             return _PreparedFile(file_path, [], 0, skipped=True)
 
