@@ -149,7 +149,11 @@ class KnowledgeStore:
             ),
         )
         self.conn.commit()
-        self._faiss_dirty = True
+        # Incremental index update: append this vector instead of marking the
+        # whole index dirty. Learning happens on every cloud escalation, so a
+        # full O(n) rebuild per insert would dominate. add() is O(dim).
+        if entry.embedding is not None:
+            self._faiss_add(entry_id, np.asarray(entry.embedding, dtype=np.float32))
 
         return KnowledgeEntry(
             id=entry_id,
@@ -333,6 +337,31 @@ class KnowledgeStore:
         self._faiss_index = index
         self._faiss_ids = ids
         self._faiss_dirty = False
+
+    def _faiss_add(self, entry_id: str, embedding: np.ndarray) -> None:
+        """Append a single committed vector to the live FAISS index.
+
+        Fast path (index built and clean): append this one vector — O(dim) —
+        keeping the index position aligned with ``_faiss_ids`` (both grow by
+        one, so position ``ntotal-1`` maps to ``entry_id``). ``insert()``
+        validates the embedding dim before calling, so it always matches.
+
+        No live index yet (``None``, e.g. after a search over an empty store):
+        we can't append, so mark the store dirty. Without this the committed row
+        would be orphaned — the next search sees ``dirty=False`` and skips the
+        rebuild, so the row never enters the index. Already dirty: leave it; the
+        pending rebuild from SQLite will pick this committed row up.
+        """
+        if self._faiss_index is None:
+            self._faiss_dirty = True
+            return
+        if self._faiss_dirty:
+            return
+
+        vec = embedding.astype(np.float32).reshape(1, -1)
+        faiss.normalize_L2(vec)
+        self._faiss_index.add(vec)
+        self._faiss_ids.append(entry_id)
 
     def _filtered_search(
         self,
