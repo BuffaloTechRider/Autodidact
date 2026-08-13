@@ -147,6 +147,23 @@ class TestIncrementalFaissAdd:
         assert ks._faiss_dirty is True
         assert ks._faiss_index is None
 
+    def test_insert_after_search_over_empty_store_is_findable(self, setup):
+        """A search over an empty store sets index=None, dirty=False; a later
+        insert must re-dirty so the committed row isn't orphaned from the index."""
+        ks, conn, config = setup
+        e1 = np.array([1.0] + [0.0] * 31, dtype=np.float32)
+        # Search first while empty: index stays None, store goes clean.
+        assert ks.search(e1, limit=5) == []
+        assert ks._faiss_index is None and ks._faiss_dirty is False
+
+        # Insert with no live index: must mark dirty so the next search rebuilds.
+        ks.insert(NewKnowledgeEntry(content="A", embedding=e1.tolist()))
+        assert ks._faiss_dirty is True
+
+        hits = ks.search(e1, limit=5)
+        assert len(hits) == 1
+        assert hits[0].entry.content == "A"
+
 
 class TestEbbinghausDecay:
     """Test Ebbinghaus decay formula."""

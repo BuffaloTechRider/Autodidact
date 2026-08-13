@@ -341,16 +341,21 @@ class KnowledgeStore:
     def _faiss_add(self, entry_id: str, embedding: np.ndarray) -> None:
         """Append a single committed vector to the live FAISS index.
 
-        No-op when the index hasn't been built yet or is already marked dirty:
-        in both cases the next search rebuilds from SQLite, which already holds
-        this committed row, so appending here would be redundant (or impossible,
-        with no index to add to). ``insert()`` validates the embedding dim before
-        calling, so it always matches the index dim.
+        Fast path (index built and clean): append this one vector — O(dim) —
+        keeping the index position aligned with ``_faiss_ids`` (both grow by
+        one, so position ``ntotal-1`` maps to ``entry_id``). ``insert()``
+        validates the embedding dim before calling, so it always matches.
 
-        The index position and ``_faiss_ids`` must stay aligned; both grow by one
-        here so position ``ntotal-1`` maps to ``entry_id``.
+        No live index yet (``None``, e.g. after a search over an empty store):
+        we can't append, so mark the store dirty. Without this the committed row
+        would be orphaned — the next search sees ``dirty=False`` and skips the
+        rebuild, so the row never enters the index. Already dirty: leave it; the
+        pending rebuild from SQLite will pick this committed row up.
         """
-        if self._faiss_dirty or self._faiss_index is None:
+        if self._faiss_index is None:
+            self._faiss_dirty = True
+            return
+        if self._faiss_dirty:
             return
 
         vec = embedding.astype(np.float32).reshape(1, -1)
