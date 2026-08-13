@@ -114,6 +114,57 @@ class TestSearch:
         assert len(hits) == 0
 
 
+class TestIncrementalFaissAdd:
+    """insert() appends to the live FAISS index instead of forcing a rebuild."""
+
+    def test_insert_after_search_is_findable_without_rebuild(self, setup):
+        ks, conn, config = setup
+        e1 = np.array([1.0] + [0.0] * 31, dtype=np.float32)
+        ks.insert(NewKnowledgeEntry(content="A", embedding=e1.tolist()))
+
+        # First search builds the index; it's now clean.
+        assert len(ks.search(e1, limit=5)) == 1
+        assert ks._faiss_dirty is False
+
+        # A subsequent insert must append incrementally, not re-dirty the index.
+        e2 = np.array([0.0, 1.0] + [0.0] * 30, dtype=np.float32)
+        ks.insert(NewKnowledgeEntry(content="B", embedding=e2.tolist()))
+        assert ks._faiss_dirty is False
+        assert ks._faiss_index.ntotal == 2
+        assert len(ks._faiss_ids) == 2
+
+        # The new entry is retrievable without a full rebuild.
+        hits = ks.search(e2, limit=5)
+        assert len(hits) == 1
+        assert hits[0].entry.content == "B"
+
+    def test_insert_before_first_search_defers_to_rebuild(self, setup):
+        """With no live index yet, insert leaves the store dirty for lazy rebuild."""
+        ks, conn, config = setup
+        ks.insert(NewKnowledgeEntry(
+            content="A", embedding=_random_embedding(seed=1)
+        ))
+        assert ks._faiss_dirty is True
+        assert ks._faiss_index is None
+
+    def test_insert_after_search_over_empty_store_is_findable(self, setup):
+        """A search over an empty store sets index=None, dirty=False; a later
+        insert must re-dirty so the committed row isn't orphaned from the index."""
+        ks, conn, config = setup
+        e1 = np.array([1.0] + [0.0] * 31, dtype=np.float32)
+        # Search first while empty: index stays None, store goes clean.
+        assert ks.search(e1, limit=5) == []
+        assert ks._faiss_index is None and ks._faiss_dirty is False
+
+        # Insert with no live index: must mark dirty so the next search rebuilds.
+        ks.insert(NewKnowledgeEntry(content="A", embedding=e1.tolist()))
+        assert ks._faiss_dirty is True
+
+        hits = ks.search(e1, limit=5)
+        assert len(hits) == 1
+        assert hits[0].entry.content == "A"
+
+
 class TestEbbinghausDecay:
     """Test Ebbinghaus decay formula."""
 
