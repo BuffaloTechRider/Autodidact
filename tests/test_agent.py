@@ -186,6 +186,89 @@ class TestCorrection:
         assert agent.memory.count() == 1
 
 
+class TestRunFrontDoor:
+    """Agent.run() — the unified executor front door (B5)."""
+
+    def _tool_lp(self, name, args, avg_logprob):
+        from autodidact.llm_client import ToolCall
+        return ChatResponseWithLogprobs(
+            content="", model="qwen2.5:7b", avg_logprob=avg_logprob,
+            tool_calls=[ToolCall(id="c0", name=name, arguments=args)],
+        )
+
+    def _text_lp(self, text, avg_logprob=-0.1):
+        return ChatResponseWithLogprobs(
+            content=text, model="qwen2.5:7b", avg_logprob=avg_logprob, tool_calls=[],
+        )
+
+    def test_qa_finishes_in_one_turn(self, agent_with_mocks):
+        """A question with no tool call finishes on turn 1 — no classifier."""
+        agent = agent_with_mocks
+        agent._local_client.chat_with_logprobs.return_value = self._text_lp(
+            "Paris is the capital of France.", avg_logprob=-0.1,
+        )
+        resp = agent.run("What is the capital of France?")
+        assert resp.routed_to == "local"
+        assert "Paris" in resp.answer
+        assert resp.cost_usd == 0.0
+        agent._cloud_client.chat.assert_not_called()
+
+    def test_multi_step_task_dispatches_tools(self, agent_with_mocks, tmp_path, monkeypatch):
+        """FR-2 acceptance: a task with ≥2 tool calls completes end-to-end.
+
+        Scripted model, but REAL tool dispatch — write_file then read_file
+        actually touch the filesystem through the shared registry, so this
+        exercises the full loop→dispatch→result→loop cycle, not just routing.
+        """
+        agent = agent_with_mocks
+        # File tools confine to the working directory, so run inside tmp_path.
+        monkeypatch.chdir(tmp_path)
+        # High-confidence local tool calls (Tier 1), then a text answer.
+        agent._local_client.chat_with_logprobs.side_effect = [
+            self._tool_lp("write_file", {"path": "hello.txt", "content": "hi"}, -0.05),
+            self._tool_lp("read_file", {"path": "hello.txt"}, -0.05),
+            self._text_lp("Done: wrote and read the file."),
+        ]
+        resp = agent.run("create hello.txt and read it back")
+        assert resp.routed_to == "local"
+        assert "Done" in resp.answer
+        assert (tmp_path / "hello.txt").read_text() == "hi"
+        assert agent._local_client.chat_with_logprobs.call_count == 3
+
+    def test_escalation_triggers_learning(self, agent_with_mocks, tmp_path, monkeypatch):
+        """A task that escalates a step to cloud learns post-hoc (moat preserved)."""
+        agent = agent_with_mocks
+        monkeypatch.chdir(tmp_path)
+        # Step 1: local proposes a LOW-confidence tool call → Tier 3 escalates.
+        # The cloud regenerates the tool call (escalated=True), it runs, then a
+        # local text answer finishes the loop.
+        agent._local_client.chat_with_logprobs.side_effect = [
+            self._tool_lp("write_file", {"path": "x.txt", "content": "1989"}, -4.0),
+            self._text_lp("The Berlin Wall fell in 1989."),
+        ]
+        agent._cloud_client.chat_with_logprobs = MagicMock(
+            return_value=self._tool_lp("write_file", {"path": "x.txt", "content": "1989"}, -0.1),
+        )
+        resp = agent.run("Record the year the Berlin Wall fell")
+        if getattr(agent, "_last_learn_thread", None):
+            agent._last_learn_thread.join(timeout=5)
+        assert resp.routed_to == "cloud"
+        assert resp.learned is True
+        assert agent.memory.count() == 1
+
+    def test_plan_makes_upfront_cloud_call(self, agent_with_mocks):
+        """plan=True makes one cloud planning call before the loop; plan=False doesn't."""
+        agent = agent_with_mocks
+        agent._local_client.chat_with_logprobs.return_value = self._text_lp("done")
+        agent._cloud_client.chat.reset_mock()
+
+        agent.run("do a multi-step thing", plan=False)
+        agent._cloud_client.chat.assert_not_called()
+
+        agent.run("do a multi-step thing", plan=True)
+        agent._cloud_client.chat.assert_called_once()
+
+
 class TestSavings:
     """Test cost tracking."""
 

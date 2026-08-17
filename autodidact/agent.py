@@ -37,9 +37,12 @@ from autodidact.events import (
     ProgressEvent,
     TokenEvent,
 )
+from autodidact.executor import Executor, ExecutionResult, MemoryHit
 from autodidact.knowledge_store import KnowledgeStore, ScoredKnowledgeEntry
 from autodidact.learning_extractor import ExtractionResult, LearningExtractor
 from autodidact.llm_client import ChatMessage, ChatResponseWithLogprobs, LLMClient, LLMConfig
+from autodidact.routing.step_router import FixedThresholdRouter
+from autodidact.tools import REGISTRY
 from autodidact.signals.grounded_self_assessment import SelfAssessment
 from autodidact.types import AutodidactConfig, NewKnowledgeEntry
 from autodidact.routing import RoutingState, run_pipeline
@@ -293,6 +296,7 @@ class Agent:
         self._gsa: Optional[SelfAssessment] = None
         self._query_stages: Optional[list] = None
         self._correct_stages: Optional[list] = None
+        self._executor: Optional[Executor] = None
 
     # ── Public API ────────────────────────────────────────────────
 
@@ -473,6 +477,136 @@ class Agent:
             emit=_emit,
         )
         return run_pipeline(self._correct_stages, state)
+
+    def run(
+        self,
+        task: str,
+        context: Optional[str] = None,
+        *,
+        plan: bool = False,
+        on_progress: ProgressCallback = None,
+    ) -> QueryResponse:
+        """Run a task through the unified ReAct executor — the single front door.
+
+        Unlike ``query()`` (single-shot Q&A routing), this drives the tiered
+        tool-calling loop: the model decides at each turn whether to call a
+        tool or answer, and each step's local-vs-cloud choice runs through the
+        confidence router. A pure question simply finishes on turn 1 with no
+        tool call, so this path subsumes Q&A without a task-vs-question
+        classifier.
+
+        Parameters
+        ----------
+        task
+            The user's request (question or multi-step task).
+        context
+            Optional external context injected ahead of the task.
+        plan
+            When True, make one upfront cloud call to decompose the task into
+            steps and inject that outline as context; the per-step router then
+            still decides local-vs-cloud for each step. When False (default),
+            the model self-decomposes turn by turn.
+        on_progress
+            Optional callback receiving the executor's progress dicts.
+
+        Learning: a task whose execution escalated to cloud is learned from
+        post-hoc (task text → final answer) in a background thread, reusing the
+        same extraction/dedup path as ``query()``. So a repeated task can hit
+        the memory tier next time at $0.
+        """
+        started = time.perf_counter()
+
+        if plan and self._cloud_client is not None:
+            plan_text = self._plan_task(task)
+            context = plan_text if not context else f"{context}\n\n{plan_text}"
+
+        executor = self._get_executor()
+        result = executor.execute(task, context=context, on_progress=on_progress)
+
+        # Learn from escalation post-hoc: the executor stayed decoupled from the
+        # knowledge store, so the Agent inspects the result and reuses _learn.
+        learned = False
+        if result.escalations > 0 and result.answer:
+            will_learn = not _cloud_response_is_non_answer(result.answer)
+            if will_learn:
+                import threading
+                t = threading.Thread(
+                    target=self._learn, args=(task, result.answer), daemon=True,
+                )
+                t.start()
+                self._last_learn_thread = t
+                learned = True
+
+        routed_to = "memory" if result.stop_reason == "memory" else (
+            "cloud" if result.escalations > 0 else "local"
+        )
+        latency = _elapsed_ms(started)
+        self._record_query(routed_to, result.cost_usd, 0.0, latency,
+                           learned=learned, question=task)
+        self._append_history(task, result.answer)
+        return QueryResponse(
+            answer=result.answer,
+            routed_to=routed_to,
+            confidence=0.0,
+            cost_usd=result.cost_usd,
+            learned=learned,
+            latency_ms=latency,
+        )
+
+    def _get_executor(self) -> Executor:
+        """Build (once) the tiered executor from the Agent's own collaborators.
+
+        Cached because construction wires the shared tool registry, router, and
+        the task-entry memory probe — none of which change across calls.
+        """
+        if getattr(self, "_executor", None) is not None:
+            return self._executor
+
+        self._executor = Executor(
+            local=self._local_client,
+            cloud=self._cloud_client,
+            tools=REGISTRY,
+            router=FixedThresholdRouter(),
+            estimate_cost=self._estimate_cost,
+            memory=self._task_memory_probe,
+            # GSA pre-gate is a single-query probe; adapting it to a running
+            # trajectory ("what's the query mid-task?") is an FR-1 refinement,
+            # not front-door plumbing. Left disabled here; step-level logprob
+            # routing (the moat) is active.
+            gsa=None,
+        )
+        return self._executor
+
+    def _task_memory_probe(self, task: str) -> Optional[MemoryHit]:
+        """Task-entry memory tier: a fresh, high-similarity stored answer for
+        the whole task short-circuits the loop at $0 (FR-1 Tier 0)."""
+        if self._embed_client is None:
+            return None
+        q_emb = self._embed_client.embed(task)
+        hits = self.memory.search(q_emb, limit=1,
+                                  min_similarity=self.confidence_threshold)
+        if not hits:
+            return None
+        top = hits[0]
+        return MemoryHit(
+            answer=top.entry.verbatim_response or top.entry.content,
+            similarity=top.score,
+            source_question=top.entry.question or "",
+        )
+
+    def _plan_task(self, task: str) -> str:
+        """One upfront cloud call that decomposes a task into an ordered step
+        outline, returned as text to inject as executor context."""
+        assert self._cloud_client is not None
+        messages = [
+            ChatMessage(role="system", content=(
+                "Break the user's task into a short numbered list of concrete "
+                "steps. Output only the list — no preamble."
+            )),
+            ChatMessage(role="user", content=task),
+        ]
+        resp = self._cloud_client.chat(messages, max_tokens=512)
+        return f"Plan:\n{resp.content}"
 
     def savings(self) -> SavingsReport:
         """Return cumulative cost savings across all sessions (R6 AC2).
