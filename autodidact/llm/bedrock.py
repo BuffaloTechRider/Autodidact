@@ -39,15 +39,6 @@ class BedrockBackend:
     def chat(self, messages: "list[ChatMessage]", **opts: Any) -> "ChatResponse":
         from autodidact.llm_client import ChatResponse, LLMClientError
 
-        if opts.get("tools"):
-            # Bedrock Converse tool calling (toolConfig / toolUse blocks) is a
-            # planned follow-up; not wired yet. Fail loudly rather than silently
-            # dropping the tools and returning an untooled answer.
-            raise LLMClientError(
-                "tool calling is not yet supported on the Bedrock backend; "
-                "use the Ollama or OpenAI-compatible provider for tool use"
-            )
-
         client = self._get_client()
         system, converse_messages = self._to_messages(messages)
         inference_config: dict[str, Any] = {}
@@ -61,6 +52,11 @@ class BedrockBackend:
             kwargs["system"] = system
         if inference_config:
             kwargs["inferenceConfig"] = inference_config
+        # Converse tool calling: attach the schemas as toolConfig. The response
+        # may then carry toolUse blocks, which we parse back into ToolCalls.
+        tool_config = _to_tool_config(opts.get("tools"))
+        if tool_config is not None:
+            kwargs["toolConfig"] = tool_config
 
         def do() -> "ChatResponse":
             started = time.perf_counter()
@@ -85,8 +81,10 @@ class BedrockBackend:
                 ((resp.get("output") or {}).get("message") or {}).get("content", [])
             )
             text = "".join(
-                part.get("text", "") for part in content_parts if isinstance(part, dict)
+                part.get("text", "") for part in content_parts
+                if isinstance(part, dict) and "text" in part
             )
+            tool_calls = _parse_converse_tool_uses(content_parts)
             usage = resp.get("usage") or {}
             return ChatResponse(
                 content=text,
@@ -94,6 +92,7 @@ class BedrockBackend:
                 input_tokens=int(usage.get("inputTokens", 0) or 0),
                 output_tokens=int(usage.get("outputTokens", 0) or 0),
                 latency_ms=latency_ms,
+                tool_calls=tool_calls,
             )
 
         transient = self._transient_exceptions() + (_BedrockThrottleError,)
@@ -112,6 +111,7 @@ class BedrockBackend:
             input_tokens=base.input_tokens,
             output_tokens=base.output_tokens,
             latency_ms=base.latency_ms,
+            tool_calls=base.tool_calls,
             logprobs=[],
             avg_logprob=None,
             top_logprobs_by_position=[],
@@ -307,17 +307,102 @@ class BedrockBackend:
     def _to_messages(
         self, messages: "list[ChatMessage]",
     ) -> tuple[list[dict], list[dict]]:
-        """Split into Bedrock Converse API (system, user+assistant) format."""
+        """Split into Bedrock Converse API (system, user+assistant) format.
+
+        Tool calling maps to Converse content blocks:
+          - an assistant turn with ``tool_calls`` → ``toolUse`` blocks (plus any
+            leading text), and
+          - a ``role="tool"`` result turn → a ``toolResult`` block, which the
+            Converse API requires to live in a **user** message.
+
+        Consecutive tool results are merged into one user message, matching the
+        Converse contract that a tool-use assistant turn is answered by a single
+        following user turn carrying every toolResult.
+        """
         system_blocks: list[dict] = []
         converse_messages: list[dict] = []
         for m in messages:
             if m.role == "system":
                 system_blocks.append({"text": m.content})
-            else:
-                converse_messages.append(
-                    {"role": m.role, "content": [{"text": m.content}]}
-                )
+                continue
+
+            if m.role == "tool":
+                block = {
+                    "toolResult": {
+                        "toolUseId": m.tool_call_id or "",
+                        "content": [{"text": m.content}],
+                    }
+                }
+                # Merge into a preceding user turn if it's already tool results,
+                # so parallel tool calls answer in one user message.
+                if (converse_messages and converse_messages[-1]["role"] == "user"
+                        and all("toolResult" in b for b in converse_messages[-1]["content"])):
+                    converse_messages[-1]["content"].append(block)
+                else:
+                    converse_messages.append({"role": "user", "content": [block]})
+                continue
+
+            if m.role == "assistant" and m.tool_calls:
+                content: list[dict] = []
+                if m.content:
+                    content.append({"text": m.content})
+                for tc in m.tool_calls:
+                    content.append({
+                        "toolUse": {
+                            "toolUseId": tc.id,
+                            "name": tc.name,
+                            "input": tc.arguments,
+                        }
+                    })
+                converse_messages.append({"role": "assistant", "content": content})
+                continue
+
+            converse_messages.append(
+                {"role": m.role, "content": [{"text": m.content}]}
+            )
         return system_blocks, converse_messages
+
+
+def _to_tool_config(tools: Any) -> "dict | None":
+    """Convert OpenAI-style function schemas to a Converse ``toolConfig``.
+
+    Input is the list ``ToolRegistry.get_schemas()`` returns
+    (``{"type": "function", "function": {name, description, parameters}}``).
+    Converse wants ``{"tools": [{"toolSpec": {name, description,
+    inputSchema: {json: <schema>}}}]}``. Returns None when no tools are given.
+    """
+    if not tools:
+        return None
+    specs: list[dict] = []
+    for t in tools:
+        fn = t.get("function", t) if isinstance(t, dict) else {}
+        spec: dict[str, Any] = {
+            "name": fn.get("name", ""),
+            "inputSchema": {"json": fn.get("parameters", {"type": "object", "properties": {}})},
+        }
+        if fn.get("description"):
+            spec["description"] = fn["description"]
+        specs.append({"toolSpec": spec})
+    return {"tools": specs}
+
+
+def _parse_converse_tool_uses(content_parts: list) -> list:
+    """Extract ToolCalls from a Converse message's content blocks."""
+    from autodidact.llm_client import ToolCall
+
+    calls: list = []
+    for part in content_parts:
+        if not isinstance(part, dict):
+            continue
+        tu = part.get("toolUse")
+        if not tu:
+            continue
+        calls.append(ToolCall(
+            id=tu.get("toolUseId") or f"call_{len(calls)}",
+            name=tu.get("name", ""),
+            arguments=tu.get("input") or {},
+        ))
+    return calls
 
 
 __all__ = ["BedrockBackend"]
