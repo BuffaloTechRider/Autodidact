@@ -28,10 +28,10 @@
 |---|------|--------|--------|-------|
 | B1 | Executor interface (`ExecutionResult` shape + `execute()`) | FR-2 | ✅ | `autodidact/executor.py`; tests in `tests/test_executor.py`. `ExecutionResult` mirrors the DESIGN-V2 contract. |
 | B2 | `executor.py` — ReAct loop with step-level routing | FR-2 | ✅ | Tiered loop reuses `routing/step_router.py` (`StepRouter`) per turn; commits `5c01b71`, `8d2adde`. |
-| B3 | `planner.py` — task → steps decomposition | FR-2 | ⬜ | Not started. Uses loaded skills when available (Phase C) or LLM-generated. |
+| B3 | `planner.py` — task → steps decomposition | FR-2 | ⬜ | **Descoped.** `run(plan=True)` does this as one cloud pre-pass injected as context (no subsystem). A standalone `planner.py` is only needed if skill-guided planning (D2) wants structured steps. Self-decompose (`plan=False`) is the default, matching Hermes/Claude Code. |
 | B4 | Execution trace recording | FR-2, FR-3 | 🔧 | Landed as `trajectory_store.py` (`StepRecord`/`TrajectoryStore`, resume) + `trajectory_compress.py`, **not** the `execution_traces` table named here. Reconcile schema vs. skill reviewer needs (Phase C). |
-| B5 | Task detection + dispatch in `agent.py` (Q&A vs task) | FR-2 | ⬜ | Not started. Keyword heuristic; keep v1.0 `chat`/`query` intact (NFR-1). |
-| B6 | Execution-mode rendering in `thought_renderer.py` ([STEP]/[SKILL]/[ESCALATING]) | FR-2 | ⬜ | Not started. |
+| B5 | Executor as single front door in `agent.py` | FR-2 | ✅ | **Revised from "task-vs-Q&A detection" — no classifier.** `Agent.run(task, plan=)` drives the executor; Q&A finishes turn 1 with no tool call, so it subsumes questions without a heuristic (matches Hermes/Claude Code). Task-level learning-from-escalation wired post-hoc (reuses `_learn`). `query()`/`chat()` kept intact per NFR-1 (staged; shim conversion is a fast-follow). Tests: `TestRunFrontDoor` in `tests/test_agent.py`. **Two known gaps, deliberately deferred:** (a) step router is `FixedThresholdRouter` (non-learning) — Thompson per-step posteriors are a follow-up; (b) `run()` only escalates low-confidence *tool calls*, not low-confidence *text* answers, so pure-Q&A confidence escalation still belongs to `query()`. |
+| B6 | Execution-mode rendering in `thought_renderer.py` ([STEP]/[SKILL]/[ESCALATING]) | FR-2 | 🔧 | Minimal progress printing wired in the `do` CLI command (`tool_result`/`cloud_call`/`memory_hit`). Full `[STEP]/[SKILL]/[ESCALATING]` renderer in `thought_renderer.py` still todo. |
 
 ## Phase C — Skill Learning
 
@@ -48,7 +48,7 @@
 
 | # | Task | Serves | Status | Notes |
 |---|------|--------|--------|-------|
-| D1 | CLI: `autodidact do`, `autodidact skills {list,view,search}` | FR-2, FR-3 | ⬜ | |
+| D1 | CLI: `autodidact do`, `autodidact skills {list,view,search}` | FR-2, FR-3 | 🔧 | `autodidact do "<task>" [--plan]` landed (wired to `Agent.run`). `skills` sub-commands await Phase C. |
 | D2 | Skill-guided execution: planner structures steps from loaded skill | FR-2, FR-4 | ⬜ | |
 | D3 | End-to-end demo: "learn once, execute free forever" (day1 escalate → day2 skill → day3 $0) | FR-3, FR-4, NFR-2 | ⬜ | Success criterion from `03a-design-full.md`. |
 | D4 | Cost dashboard for execution mode | NFR-2 | ⬜ | |
@@ -58,7 +58,7 @@
 ## Acceptance criteria (from `01-requirements.md`)
 
 - **FR-1:** router selects the correct tier for a step with fixed signals (unit test per tier). — A1 done.
-- **FR-2:** a task with ≥2 tool calls completes end-to-end (integration test). — B2/D3.
+- **FR-2:** a task with ≥2 tool calls completes end-to-end (integration test). — B2/B5 done; `test_multi_step_task_dispatches_tools` (real write_file→read_file dispatch through `run()`).
 - **FR-3:** after a cloud-solved task, a skill exists and is retrievable by semantic match. — C1/C4.
 - **FR-4:** second run of a similar task (cosine ≥0.80) resolves at memory/local tier, **0 cloud calls**. — C1/C3/D2.
 - **FR-5:** registry lists all tools; schemas validate against OpenAI function format. — A5 (regressed).
@@ -70,6 +70,6 @@
 ## Immediate next actions
 
 1. **Run A7** (cloud/local/memory split baseline) to confirm the apprentice-agent ROI — the last open Phase A item and the adversarial-check measurement from `00-problem.md`.
-2. **B5 + B6** wire the executor into the app: task-vs-Q&A detection/dispatch in `agent.py` and execution-mode rendering in `thought_renderer.py`, so the loop is reachable end-to-end.
-3. **B4 reconciliation:** decide whether `trajectory_store` satisfies the execution-trace requirement or a distinct `execution_traces` table is still needed for the Phase C skill reviewer.
-4. **FR-2 integration test:** a task with ≥2 tool calls completing end-to-end (the FR-2 acceptance gate) — depends on B5/B6.
+2. **B5 follow-ups:** (a) convert `query()`/`chat()` to shims over `run()` now that the front door is proven; (b) a learning `StepRouter` (Thompson per-step posteriors) to replace `FixedThresholdRouter`; (c) escalate low-confidence *text* answers in the loop so `run()` fully subsumes `query()`'s Q&A routing.
+3. **B6:** full execution-mode renderer (`[STEP]/[SKILL]/[ESCALATING]`) in `thought_renderer.py` (minimal progress printing already in `do`).
+4. **B4 reconciliation:** decide whether `trajectory_store` satisfies the execution-trace requirement or a distinct `execution_traces` table is still needed for the Phase C skill reviewer.

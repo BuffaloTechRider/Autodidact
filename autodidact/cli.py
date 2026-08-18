@@ -632,6 +632,34 @@ def query(
 
 
 @app.command()
+def do(
+    task: str = typer.Argument(..., help="Task to execute (may take multiple tool-calling steps)"),
+    plan: bool = typer.Option(False, "--plan", help="Have the cloud model plan the steps first, then route each step local/cloud"),
+    config_path: Optional[str] = typer.Option(None, "--config-path"),
+) -> None:
+    """Run a task through the tiered ReAct executor (the unified front door).
+
+    A plain question finishes in one step; a multi-step task drives the
+    tool-calling loop, routing each step local-vs-cloud by confidence.
+    """
+    path = Path(config_path) if config_path else None
+    agent = _get_agent(path)
+    renderer = ThoughtRenderer()
+
+    def _on_progress(evt: dict) -> None:
+        etype = evt.get("type")
+        if etype == "tool_result":
+            console.print(f"  [dim][{evt.get('tier')}][/dim] {evt.get('tool')}", style="cyan")
+        elif etype == "cloud_call":
+            console.print(f"  [yellow]↑ escalating[/yellow] {evt.get('tool')}")
+        elif etype == "memory_hit":
+            console.print(f"  [green]✓ memory[/green] (sim {evt.get('similarity', 0):.2f})")
+
+    resp = agent.run(task, plan=plan, on_progress=_on_progress)
+    renderer.render_response(resp)
+
+
+@app.command()
 def savings(
     config_path: Optional[str] = typer.Option(None, "--config-path"),
 ) -> None:

@@ -86,7 +86,7 @@ class OllamaBackend:
         tools = opts.pop("tools", None)
         body = {
             "model": self.config.model,
-            "messages": [_message_to_tool_dict(m) for m in messages],
+            "messages": [_message_to_tool_dict(m, json_arguments=False) for m in messages],
             "stream": False,
             "options": self._options(opts),
         }
@@ -122,7 +122,7 @@ class OllamaBackend:
         think = opts.pop("think", None)
         body = {
             "model": self.config.model,
-            "messages": [_message_to_tool_dict(m) for m in messages],
+            "messages": [_message_to_tool_dict(m, json_arguments=False) for m in messages],
             "stream": False,
             "logprobs": True,
             "top_logprobs": top_logprobs_k,
@@ -199,7 +199,7 @@ class OllamaBackend:
 
         body: dict[str, Any] = {
             "model": self.config.model,
-            "messages": [_message_to_tool_dict(m) for m in messages],
+            "messages": [_message_to_tool_dict(m, json_arguments=False) for m in messages],
             "stream": True,
             "logprobs": True,
             "top_logprobs": top_logprobs_k,
@@ -261,7 +261,7 @@ class OllamaBackend:
 
         body: dict[str, Any] = {
             "model": self.config.model,
-            "messages": [_message_to_tool_dict(m) for m in messages],
+            "messages": [_message_to_tool_dict(m, json_arguments=False) for m in messages],
             "stream": True,
             "options": options,
         }
