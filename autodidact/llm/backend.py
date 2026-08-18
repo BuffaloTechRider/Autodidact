@@ -131,12 +131,18 @@ def _with_retries(
 # ChatMessage into that shared shape so both backends reuse it.
 
 
-def _message_to_tool_dict(m: "ChatMessage") -> dict:
+def _message_to_tool_dict(m: "ChatMessage", *, json_arguments: bool = True) -> dict:
     """Serialize a ChatMessage to the OpenAI/Ollama chat-message dict shape.
 
     Plain text turns become ``{"role", "content"}``. An assistant turn with
     ``tool_calls`` and a ``role="tool"`` result turn are expanded to the
-    function-calling wire format (arguments serialized to a JSON string).
+    function-calling wire format.
+
+    ``json_arguments`` controls how tool-call arguments are encoded: OpenAI's
+    Chat Completions wants a JSON *string* (the default), but Ollama's
+    ``/api/chat`` wants a JSON *object* and its prompt template errors on a
+    string ("can't find closing '}' symbol"). Ollama callers pass
+    ``json_arguments=False``.
     """
     import json as _json
 
@@ -157,7 +163,7 @@ def _message_to_tool_dict(m: "ChatMessage") -> dict:
                     "type": "function",
                     "function": {
                         "name": tc.name,
-                        "arguments": _json.dumps(tc.arguments),
+                        "arguments": _json.dumps(tc.arguments) if json_arguments else tc.arguments,
                     },
                 }
                 for tc in m.tool_calls
