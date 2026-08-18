@@ -282,18 +282,7 @@ class TestToolsWithLogprobs:
         assert out.tool_calls[0].arguments == {"command": "ls"}
 
 
-# ── Bedrock (not yet supported) ──────────────────────────────────
-
-
-class TestBedrockRejectsTools:
-    def test_tools_raise_clear_error(self):
-        client = LLMClient(LLMConfig(provider="bedrock", model="anthropic.claude-v2"))
-        with pytest.raises(LLMClientError, match="not yet supported"):
-            client.chat([ChatMessage(role="user", content="hi")], tools=_TOOLS)
-
-    def test_logprobs_path_also_rejects_tools(self):
-        client = LLMClient(LLMConfig(provider="bedrock", model="anthropic.claude-v2"))
-        with pytest.raises(LLMClientError, match="not yet supported"):
-            client.chat_with_logprobs(
-                [ChatMessage(role="user", content="hi")], tools=_TOOLS
-            )
+# ── Bedrock ──────────────────────────────────────────────────────
+# Bedrock Converse tool-calling is implemented; its coverage (schema
+# conversion, toolUse/toolResult mapping, round trip) lives in
+# tests/test_bedrock_tools.py.
