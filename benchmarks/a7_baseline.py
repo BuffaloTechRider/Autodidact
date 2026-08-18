@@ -66,6 +66,8 @@ class TaskOutcome:
     tier_counts: Counter = field(default_factory=Counter)
     # Max-intended tier over the task's steps (the tier the *task* would route to).
     peak_tier: str = "LOCAL"
+    escalations: int = 0  # real cloud escalations (0 in local-only mode)
+    cost_usd: float = 0.0
 
 
 def _intended_tier(avg_logprob: float | None) -> Tier:
@@ -77,14 +79,23 @@ def _intended_tier(avg_logprob: float | None) -> Tier:
     return _DEFAULT_THRESHOLD.tier_for(avg_logprob)
 
 
-def _run_one(task: MultiStepTask, local: LLMClient, conn) -> TaskOutcome:
-    """Run a single task in an isolated sandbox dir and read back its trajectory."""
+def _run_one(
+    task: MultiStepTask, local: LLMClient, conn,
+    cloud: "Optional[LLMClient]" = None,
+    estimate_cost: "Optional[object]" = None,
+) -> TaskOutcome:
+    """Run a single task in an isolated sandbox dir and read back its trajectory.
+
+    cloud=None → local-only baseline (tier is *intended*, recovered from
+    logprob). cloud set → real escalation: uncertain/low-confidence tool steps
+    regenerate on the cloud model, so the recorded tier reflects actual routing
+    and cost accrues.
+    """
     store = TrajectoryStore(conn)
-    # Local-only: no cloud. Uncertain/low-confidence steps degrade to local
-    # execution, but we recover the *intended* tier from the recorded logprob.
     executor = Executor(
-        local=local, cloud=None, tools=REGISTRY,
+        local=local, cloud=cloud, tools=REGISTRY,
         router=FixedThresholdRouter(), store=store, max_iterations=12,
+        estimate_cost=estimate_cost,
     )
 
     verify = verifier_for(task.task_id)
@@ -112,8 +123,11 @@ def _run_one(task: MultiStepTask, local: LLMClient, conn) -> TaskOutcome:
     tier_counts: Counter = Counter()
     peak = Tier.LOCAL
     order = {Tier.LOCAL: 0, Tier.VERIFY: 1, Tier.CLOUD: 2}
+    valid_tiers = {t.value for t in order}
     for s in steps:
-        t = _intended_tier(s.avg_logprob)
+        # Prefer the *actual* tier the executor recorded (reflects real
+        # escalation in cloud mode); fall back to intended-from-logprob.
+        t = Tier(s.tier) if s.tier in valid_tiers else _intended_tier(s.avg_logprob)
         tier_counts[t.value] += 1
         if order[t] > order[peak]:
             peak = t
@@ -123,7 +137,8 @@ def _run_one(task: MultiStepTask, local: LLMClient, conn) -> TaskOutcome:
         task_id=task.task_id, difficulty=task.difficulty,
         steps_taken=result.steps_taken, stop_reason=result.stop_reason,
         completed=completed, correct=correct, tier_counts=tier_counts,
-        peak_tier=peak.value,
+        peak_tier=peak.value, escalations=result.escalations,
+        cost_usd=result.cost_usd,
     )
 
 
@@ -214,6 +229,18 @@ def _report(outcomes: list[TaskOutcome]) -> str:
         lines.append("    no escalation triggered. If this set is large, logprob-only")
         lines.append("    routing is miscalibrated and GSA/verification earns its keep.\n")
 
+    # Cost / real escalation (only meaningful in --cloud mode).
+    total_cost = sum(o.cost_usd for o in outcomes)
+    total_esc = sum(o.escalations for o in outcomes)
+    if total_cost > 0 or total_esc > 0:
+        n_esc_tasks = sum(1 for o in outcomes if o.escalations > 0)
+        lines.append("## Real cloud escalation (--cloud mode)")
+        lines.append(f"  Tasks that escalated: {n_esc_tasks}/{n}   "
+                     f"Total escalations: {total_esc}   Cost: ${total_cost:.4f}")
+        if n:
+            lines.append(f"  Avg cost/task: ${total_cost / n:.4f}")
+        lines.append("")
+
     lines.append("## Read")
     lines.append("If LOCAL% falls and CLOUD% rises from easy→hard, difficulty is")
     lines.append("separable and per-step routing pays off. A flat mix means it's")
@@ -239,27 +266,42 @@ def main() -> int:
     p.add_argument("--n-pilot", type=int, default=10)
     p.add_argument("--local-model", default="qwen2.5:7b")
     p.add_argument("--embedding-model", default="qllama/bge-large-en-v1.5")
+    p.add_argument("--cloud", action="store_true",
+                   help="Enable real cloud escalation (spends Bedrock tokens)")
+    p.add_argument("--cloud-model", default="us.anthropic.claude-sonnet-4-5-20250929-v1:0")
+    p.add_argument("--bedrock-region", default="us-west-2")
     p.add_argument("--out", default="results/a7_baseline.md")
     args = p.parse_args()
 
     tasks = pilot_tasks(args.n_pilot) if args.pilot else load_tasks()
-    logger.info("A7 %s run: %d tasks", "PILOT" if args.pilot else "FULL", len(tasks))
+    mode = "CLOUD" if args.cloud else "LOCAL-ONLY"
+    logger.info("A7 %s %s run: %d tasks", "PILOT" if args.pilot else "FULL", mode, len(tasks))
 
     local = LLMClient(LLMConfig(
         provider="ollama", model=args.local_model, embedding_model=args.embedding_model,
     ))
+    cloud = None
+    estimate_cost = None
+    if args.cloud:
+        cloud = LLMClient(LLMConfig(
+            provider="bedrock", model=args.cloud_model, region=args.bedrock_region,
+        ))
+        # Sonnet-class rates ($/1M): 3 in, 15 out. Rough — for a ballpark $.
+        estimate_cost = lambda i, o: (i * 3.0 + o * 15.0) / 1_000_000
+        logger.warning("CLOUD mode: escalations will spend Bedrock tokens (%s)", args.cloud_model)
+
     conn = init_database(":memory:")
 
     outcomes: list[TaskOutcome] = []
     for i, task in enumerate(tasks, 1):
         logger.info("[%d/%d] %s (%s)", i, len(tasks), task.task_id, task.difficulty)
         try:
-            outcomes.append(_run_one(task, local, conn))
+            outcomes.append(_run_one(task, local, conn, cloud=cloud, estimate_cost=estimate_cost))
         except Exception as e:
             logger.warning("task %s failed: %s", task.task_id, e)
             outcomes.append(TaskOutcome(
                 task_id=task.task_id, difficulty=task.difficulty, steps_taken=0,
-                stop_reason=f"error:{type(e).__name__}", completed=False,
+                stop_reason=f"error:{type(e).__name__}", completed=False, correct=None,
             ))
 
     report = _report(outcomes)
