@@ -304,6 +304,48 @@ _HARD_COMPUTE_TASKS: list[MultiStepTask] = [
         "h20", "Read scores.csv (name,score). Compute the mean score, then report which single person scored furthest above the mean.",
         "hard", 2, {"scores.csv": "name,score\nalice,50\nbob,55\ncara,95\ndan,60\n"}, ("read", "compute"),
     ),
+
+    # ── Independently-hard: multi-hop reasoning + error-prone transforms ──
+    # These target the concern that the first-cut corpus was too easy for a 7B
+    # model. Each needs several dependent inference steps where a small model
+    # tends to slip (off-by-one, wrong aggregation key, missed edge case), so
+    # the correctness-vs-confidence signal has room to show miscalibration.
+    MultiStepTask(
+        "x01", "Read log.txt. Each line is 'YYYY-MM-DD LEVEL msg'. Write daily_errors.txt with 'DATE count' for each date that has at least one ERROR, sorted by date, counting only ERROR lines.",
+        "hard", 2,
+        {"log.txt": "2026-01-01 INFO a\n2026-01-01 ERROR b\n2026-01-02 ERROR c\n2026-01-02 ERROR d\n2026-01-02 INFO e\n2026-01-03 INFO f\n"},
+        ("read", "write", "compute"),
+    ),
+    MultiStepTask(
+        "x02", "Read transactions.csv (id,type,amount). Compute net balance = sum of credits minus sum of debits, and write balance.txt with just the number.",
+        "hard", 2,
+        {"transactions.csv": "id,type,amount\n1,credit,100\n2,debit,30\n3,credit,50\n4,debit,20\n"},
+        ("read", "write", "compute"),
+    ),
+    MultiStepTask(
+        "x03", "Read sequence.txt (one integer per line). Write fib_like.txt containing only the numbers that equal the sum of the two preceding numbers in the list (skip the first two).",
+        "hard", 2,
+        {"sequence.txt": "2\n3\n5\n8\n10\n18\n"},  # 5=2+3✓ 8=3+5✓ 10≠5+8 18=8+10✓
+        ("read", "write", "compute"),
+    ),
+    MultiStepTask(
+        "x04", "Read employees.csv (name,dept,salary). Write dept_avg.txt with 'dept: avg_salary' for each department, averages rounded to the nearest integer, sorted by department name.",
+        "hard", 2,
+        {"employees.csv": "name,dept,salary\na,eng,100\nb,eng,140\nc,sales,80\nd,sales,100\ne,sales,90\n"},
+        ("read", "write", "compute"),
+    ),
+    MultiStepTask(
+        "x05", "Read inventory.csv (sku,qty,reorder). Write reorder.txt listing the skus where qty is strictly less than reorder, sorted by how far below reorder they are (largest shortfall first).",
+        "hard", 2,
+        {"inventory.csv": "sku,qty,reorder\naaa,2,10\nbbb,9,10\nccc,20,5\nddd,0,4\n"},  # shortfalls: aaa 8, ddd 4, bbb 1
+        ("read", "write", "compute"),
+    ),
+    MultiStepTask(
+        "x06", "Read votes.txt (one candidate name per line). Determine the winner by plurality; if there is a tie for first, write 'TIE' to winner.txt, otherwise write the winning name.",
+        "hard", 2,
+        {"votes.txt": "amy\nbob\namy\ncara\nbob\namy\n"},  # amy 3, bob 2, cara 1 → amy
+        ("read", "write", "compute"),
+    ),
 ]
 
 
@@ -376,11 +418,47 @@ VERIFIERS: dict[str, Callable[[_Path, str], bool]] = {
         and _has_all(t, "85", "65")
     ),
     "h16": lambda d, a: _lines(d / "domains.txt") == ["example.com", "test.org"],
-    # New compute tasks added for A7 hardening (see below).
     "h18": lambda d, a: _lines(d / "cumsum.txt") == ["12", "19", "52", "57", "76"],
     "h19": lambda d, a: _lines(d / "rowsums.txt") == ["6", "15"],
     "h20": lambda d, a: _has_all(a, "cara"),
+    # Broadened coverage on existing tasks (were previously unchecked).
+    "e04": lambda d, a: "2" in a,                       # 2 .py files
+    "e05": lambda d, a: _has_all(a, "install", "usage"),  # README headings
+    "m05": lambda d, a: (
+        (d / "error_summary.txt").exists()
+        and "error" in (t := (d / "error_summary.txt").read_text().lower())
+        and "info" not in t  # only ERROR lines
+    ),
+    "m15": lambda d, a: _lines(d / "reversed.txt") == ["line three", "line two", "line one"],
+    "h05": lambda d, a: (
+        (d / "enabled.txt").exists()
+        and set(_lines(d / "enabled.txt")) == {"A", "C", "E"}  # the True settings
+    ),
+    # Independently-hard hardening tasks.
+    "x01": lambda d, a: _lines(d / "daily_errors.txt") == ["2026-01-01 1", "2026-01-02 2"],
+    "x02": lambda d, a: (d / "balance.txt").exists()
+                        and (d / "balance.txt").read_text().strip().lstrip("+") == "100",
+    "x03": lambda d, a: _lines(d / "fib_like.txt") == ["5", "8", "18"],
+    "x04": lambda d, a: (
+        (d / "dept_avg.txt").exists()
+        and (t := (d / "dept_avg.txt").read_text().lower()).index("eng") < t.index("sales")
+        and _has_all(t, "120", "90")  # eng (100,140)->120, sales (80,100,90)->90
+    ),
+    "x05": lambda d, a: _first_tokens(d / "reorder.txt", 3) == ["aaa", "ddd", "bbb"],
+    "x06": lambda d, a: (d / "winner.txt").exists()
+                        and (d / "winner.txt").read_text().strip().lower() == "amy",
 }
+
+
+def _first_tokens(p: _Path, n: int) -> list[str]:
+    """First whitespace/comma token of each of the first n non-empty lines,
+    lowercased — tolerant of 'sku' vs 'sku: shortfall' output formats."""
+    import re
+    out = []
+    for ln in _lines(p)[:n]:
+        tok = re.split(r"[\s,:]+", ln.strip())[0]
+        out.append(tok.lower())
+    return out
 
 
 def _rev_ok(p: _Path) -> bool:
