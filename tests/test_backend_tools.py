@@ -60,8 +60,19 @@ class TestMessageSerialization:
         tc = out["tool_calls"][0]
         assert tc["id"] == "call_0"
         assert tc["function"]["name"] == "terminal"
-        # Arguments are serialized to a JSON string (OpenAI/Ollama wire format).
+        # OpenAI wire format: arguments serialized to a JSON string (default).
         assert json.loads(tc["function"]["arguments"]) == {"command": "ls"}
+
+    def test_assistant_tool_calls_ollama_arguments_stay_object(self):
+        """Ollama's /api/chat template needs arguments as an object, not a JSON
+        string — a string yields HTTP 400 ("can't find closing '}' symbol")."""
+        m = ChatMessage(
+            role="assistant",
+            content="",
+            tool_calls=[ToolCall(id="call_0", name="terminal", arguments={"command": "ls"})],
+        )
+        out = _message_to_tool_dict(m, json_arguments=False)
+        assert out["tool_calls"][0]["function"]["arguments"] == {"command": "ls"}
 
     def test_tool_result_message(self):
         m = ChatMessage(role="tool", content='{"ok": true}', tool_call_id="call_0")
