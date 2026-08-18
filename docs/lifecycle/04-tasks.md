@@ -20,7 +20,7 @@
 | A4 | Backend `tools` parameter (Ollama + OpenAI) | FR-2, FR-5 | ✅ | commit `dfaaa54`; `autodidact/llm/{backend,ollama,openai}.py` |
 | A5 | Tool registry (self-register, function schemas, dispatch envelope) | FR-5 | ✅ | Recovered. `autodidact/tools/registry.py`; tests in `tests/test_tools.py`. |
 | A6 | Terminal + file-ops tools | FR-2, FR-5 | ✅ | `autodidact/tools/{terminal,file_ops,fuzzy_match}.py`; tests in `tests/test_tools.py`, `tests/test_fuzzy_match.py`. |
-| A7 | NFR-2 baseline: log cloud/local/memory split on ~50 real multi-step tasks | NFR-2 | ⬜ | The adversarial-check measurement from `00-problem.md`. Do before Phase B to confirm ROI. |
+| A7 | NFR-2 baseline: log cloud/local/memory split on ~50 real multi-step tasks | NFR-2 | 🔧 | **Partial (local-only, $0).** Corpus (`benchmarks/multistep_tasks.py`, 53 tasks + verifiers) + runner (`benchmarks/a7_baseline.py`). Full-run report: `results/a7_baseline_full.md`. Findings: local model completes 52/53 but only **16/20 verified-correct (80%)**; hard tasks **6/9**. Confidence is nearly flat across difficulty (LOCAL 96/86/89% easy/med/hard) → step difficulty looks **entangled**, not separable, and **logprob-only routing is miscalibrated** (2 confident-but-wrong: m09, h14). **Cloud-share $ figure still BLOCKED** — Bedrock backend can't do tool-calls (`bedrock.py` raises on `tools=`) and no OpenAI key; needs Bedrock Converse tool-calling or an OpenAI-compatible cloud to complete. |
 
 ## Phase B — Execution Loop
 
