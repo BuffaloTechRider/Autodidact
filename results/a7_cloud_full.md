@@ -1,52 +1,55 @@
 # A7 Baseline (cloud-enabled, hardened corpus) — NFR-2 ROI gate
 
-> **Caveat (read first):** the AWS/Midway session token expired ~13 min into
-> this ~18-min run. `ExpiredTokenException` only fires on a Converse call, which
-> only happens on **escalation** — so the 5 `error:ClientError` tasks
-> (e15, m10, m14, h14, h18) are precisely the ones that *tried to escalate* and
-> hit the dead token. Consequence: the **local-routing + correctness data (54
-> valid tasks) is solid**, but the **cloud cost/share figure is unreliable** —
-> escalations after token-death errored out instead of completing, so no cost
-> section was emitted. Re-run with a fresh token to get the real cloud share.
+> Clean run (fresh AWS token): 58/59 completed, no token failures, cost
+> section populated. This supersedes the token-truncated earlier run.
 >
-> The signal that matters is intact and *strengthened* vs the first corpus:
-> harder tasks + more verifiers → correctness fell to **72%** (hard: 8/14) and
-> the confident-but-wrong set **tripled to 6** — direct evidence that
-> logprob-only routing is miscalibrated (the case for GSA + verification).
+> **Bottom line:** cloud share is tiny (**3/59 tasks, ~2% of steps, $0.02
+> total**) because the local model is confident on almost everything — but
+> that confidence is **wrong ~23% of the time** (24/31 verified correct;
+> hard only 10/16), including **4 confident-but-wrong tasks** the router
+> never escalated. So the *saving* is real (cheap) but *unguarded*: logprob
+> alone doesn't catch the errors. This is the empirical case for GSA +
+> verification over logprob-only routing, and a caution on per-step routing
+> ROI (difficulty is entangled — tier mix is flat across easy/med/hard).
 
-Tasks: 59   Completed locally: 53/59 (90%)   Total steps: 188
+Tasks: 59   Completed locally: 58/59 (98%)   Total steps: 206
 
 ## Intended-tier distribution (from local avg_logprob vs thresholds)
 
 Cloud share here = the % of steps the router *would* escalate.
 
-  LOCAL :  124  ( 92.5%)
-  VERIFY:   10  (  7.5%)
-  CLOUD :    0  (  0.0%)
+  LOCAL :  133  ( 90.5%)
+  VERIFY:   11  (  7.5%)
+  CLOUD :    3  (  2.0%)
   (memory: 0.0% by construction — no cloud escalation, nothing learned)
 
 ## Separability: intended-tier mix by a-priori difficulty
 
-  easy  : LOCAL 100.0%  VERIFY   0.0%  CLOUD   0.0%   | completed 14/15
-  medium: LOCAL  91.9%  VERIFY   8.1%  CLOUD   0.0%   | completed 16/18
-  hard  : LOCAL  90.3%  VERIFY   9.7%  CLOUD   0.0%   | completed 23/26
+  easy  : LOCAL  96.2%  VERIFY   3.8%  CLOUD   0.0%   | completed 15/15
+  medium: LOCAL  86.7%  VERIFY   8.9%  CLOUD   4.4%   | completed 18/18
+  hard  : LOCAL  90.8%  VERIFY   7.9%  CLOUD   1.3%   | completed 25/26
 
 ## Correctness (verified tasks only)
-  Verified: 29/59   Correct: 21/29 (72%)
+  Verified: 31/59   Correct: 24/31 (77%)
 
   By a-priori difficulty:
     easy  : 8/8 correct
-    medium: 5/7 correct
-    hard  : 8/14 correct
+    medium: 6/7 correct
+    hard  : 10/16 correct
 
   Correctness by task's peak intended tier:
-    LOCAL : 17/23 correct
-    VERIFY: 4/6 correct
+    LOCAL : 20/24 correct
+    VERIFY: 3/6 correct
+    CLOUD : 1/1 correct
 
-  Confident-but-WRONG (peak tier LOCAL, incorrect): 6  ['m09', 'm11', 'x01', 'x04', 'x05', 'x06']
+  Confident-but-WRONG (peak tier LOCAL, incorrect): 4  ['m09', 'x04', 'x05', 'x06']
   → these are the routing gap: high self-confidence, wrong answer,
     no escalation triggered. If this set is large, logprob-only
     routing is miscalibrated and GSA/verification earns its keep.
+
+## Real cloud escalation (--cloud mode)
+  Tasks that escalated: 3/59   Total escalations: 3   Cost: $0.0205
+  Avg cost/task: $0.0003
 
 ## Read
 If LOCAL% falls and CLOUD% rises from easy→hard, difficulty is
@@ -59,7 +62,7 @@ logprob alone is miscalibrated — the case for GSA + verification.
   e02 [easy  ] ? steps= 3 ok  (done)  LOCAL:2
   e03 [easy  ] ✓ steps= 2 ok  (done)  LOCAL:1
   e04 [easy  ] ✓ steps= 2 ok  (done)  LOCAL:1
-  e05 [easy  ] ✓ steps= 3 ok  (done)  LOCAL:2
+  e05 [easy  ] ✓ steps= 2 ok  (done)  LOCAL:1
   e06 [easy  ] ? steps= 5 ok  (done)  LOCAL:4
   e07 [easy  ] ✓ steps= 2 ok  (done)  LOCAL:1
   e08 [easy  ] ? steps= 3 ok  (done)  LOCAL:2
@@ -69,48 +72,48 @@ logprob alone is miscalibrated — the case for GSA + verification.
   e12 [easy  ] ? steps= 2 ok  (done)  LOCAL:1
   e13 [easy  ] ✓ steps= 4 ok  (done)  LOCAL:3
   e14 [easy  ] ? steps= 3 ok  (done)  LOCAL:2
-  e15 [easy  ] ? steps= 0 INC (error:ClientError)  
+  e15 [easy  ] ? steps= 3 ok  (done)  LOCAL:1 VERIFY:1
   h01 [hard  ] ? steps= 4 ok  (done)  LOCAL:3
   h02 [hard  ] ? steps= 2 INC (done)  LOCAL:1
-  h03 [hard  ] ? steps= 5 ok  (done)  LOCAL:3 VERIFY:1
+  h03 [hard  ] ? steps= 6 ok  (done)  LOCAL:4 VERIFY:1
   h04 [hard  ] ✗ steps= 4 ok  (done)  LOCAL:2 VERIFY:1
   h05 [hard  ] ✓ steps= 4 ok  (done)  LOCAL:3
-  h06 [hard  ] ? steps= 7 ok  (done)  LOCAL:5 VERIFY:1
+  h06 [hard  ] ? steps= 7 ok  (done)  LOCAL:6
   h07 [hard  ] ✓ steps= 3 ok  (done)  LOCAL:2
   h08 [hard  ] ? steps= 3 ok  (done)  LOCAL:2
-  h09 [hard  ] ? steps= 3 ok  (done)  LOCAL:2
-  h10 [hard  ] ✓ steps= 3 ok  (done)  LOCAL:2
-  h11 [hard  ] ? steps= 4 ok  (done)  LOCAL:3
-  h12 [hard  ] ✓ steps= 5 ok  (done)  LOCAL:3 VERIFY:1
+  h09 [hard  ] ? steps= 4 ok  (done)  LOCAL:3
+  h10 [hard  ] ✓ steps= 4 ok  (done)  LOCAL:3
+  h11 [hard  ] ? steps= 3 ok  (done)  LOCAL:2
+  h12 [hard  ] ✗ steps= 4 ok  (done)  LOCAL:2 VERIFY:1
   h13 [hard  ] ? steps= 3 ok  (done)  LOCAL:2
-  h14 [hard  ] ? steps= 0 INC (error:ClientError)  
+  h14 [hard  ] ✓ steps= 7 ok  (done)  LOCAL:6
   h15 [hard  ] ? steps= 4 ok  (done)  LOCAL:3
-  h16 [hard  ] ✓ steps= 6 ok  (done)  LOCAL:5
+  h16 [hard  ] ✓ steps= 5 ok  (done)  CLOUD:1 LOCAL:3
   h17 [hard  ] ? steps= 3 ok  (done)  LOCAL:2
-  h18 [hard  ] ? steps= 0 INC (error:ClientError)  
+  h18 [hard  ] ✓ steps= 3 ok  (done)  LOCAL:2
   h19 [hard  ] ✓ steps= 3 ok  (done)  LOCAL:2
-  h20 [hard  ] ✓ steps= 4 ok  (done)  LOCAL:2 VERIFY:1
-  x01 [hard  ] ✗ steps= 7 ok  (done)  LOCAL:6
+  h20 [hard  ] ✓ steps= 3 ok  (done)  LOCAL:1 VERIFY:1
+  x01 [hard  ] ✓ steps= 4 ok  (done)  LOCAL:3
   x02 [hard  ] ✗ steps= 3 ok  (done)  LOCAL:1 VERIFY:1
   x03 [hard  ] ✓ steps= 3 ok  (done)  LOCAL:1 VERIFY:1
   x04 [hard  ] ✗ steps= 4 ok  (done)  LOCAL:3
   x05 [hard  ] ✗ steps= 5 ok  (done)  LOCAL:4
   x06 [hard  ] ✗ steps= 4 ok  (done)  LOCAL:3
-  m01 [medium] ? steps= 3 ok  (done)  LOCAL:1 VERIFY:1
+  m01 [medium] ? steps= 5 ok  (done)  LOCAL:3 VERIFY:1
   m02 [medium] ? steps= 2 ok  (done)  LOCAL:1
-  m03 [medium] ✓ steps= 3 ok  (done)  LOCAL:2
+  m03 [medium] ✓ steps= 4 ok  (done)  LOCAL:3
   m04 [medium] ? steps= 4 ok  (done)  LOCAL:3
   m05 [medium] ✓ steps= 3 ok  (done)  LOCAL:2
-  m06 [medium] ? steps= 4 ok  (done)  LOCAL:2 VERIFY:1
+  m06 [medium] ? steps= 3 ok  (done)  LOCAL:1 VERIFY:1
   m07 [medium] ? steps= 2 ok  (done)  LOCAL:1
-  m08 [medium] ? steps= 4 ok  (done)  LOCAL:3
+  m08 [medium] ? steps= 5 ok  (done)  CLOUD:1 LOCAL:3
   m09 [medium] ✗ steps= 3 ok  (done)  LOCAL:2
-  m10 [medium] ? steps= 0 INC (error:ClientError)  
-  m11 [medium] ✗ steps= 4 ok  (done)  LOCAL:3
+  m10 [medium] ? steps= 5 ok  (done)  LOCAL:3 VERIFY:1
+  m11 [medium] ✓ steps= 3 ok  (done)  LOCAL:2
   m12 [medium] ? steps= 5 ok  (done)  LOCAL:4
   m13 [medium] ✓ steps= 3 ok  (done)  LOCAL:1 VERIFY:1
-  m14 [medium] ? steps= 0 INC (error:ClientError)  
+  m14 [medium] ? steps= 2 ok  (done)  CLOUD:1
   m15 [medium] ✓ steps= 3 ok  (done)  LOCAL:2
-  m16 [medium] ? steps= 3 ok  (done)  LOCAL:2
+  m16 [medium] ? steps= 4 ok  (done)  LOCAL:3
   m17 [medium] ? steps= 4 ok  (done)  LOCAL:3
   m18 [medium] ✓ steps= 3 ok  (done)  LOCAL:2
