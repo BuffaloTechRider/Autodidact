@@ -269,6 +269,56 @@ class TestRunFrontDoor:
         agent._cloud_client.chat.assert_called_once()
 
 
+class TestStepGsaPregate:
+    """GSA pre-gate wiring into the executor (verification path from A7)."""
+
+    def test_query_builder_combines_task_and_last_tool_result(self):
+        from autodidact.agent import _messages_to_gsa_query
+        from autodidact.llm_client import ChatMessage
+        msgs = [
+            ChatMessage(role="user", content="do the task"),
+            ChatMessage(role="assistant", content="calling tool"),
+            ChatMessage(role="tool", content="result A", tool_call_id="c1"),
+            ChatMessage(role="tool", content="result B", tool_call_id="c2"),
+        ]
+        q = _messages_to_gsa_query(msgs)
+        assert "do the task" in q
+        assert "result B" in q  # most recent tool result
+        assert q != ""
+
+    def test_query_builder_task_only_when_no_tool(self):
+        from autodidact.agent import _messages_to_gsa_query
+        from autodidact.llm_client import ChatMessage
+        q = _messages_to_gsa_query([ChatMessage(role="user", content="just a task")])
+        assert q == "just a task"
+
+    def test_probe_returns_none_without_local(self, agent_with_mocks):
+        from autodidact.llm_client import ChatMessage
+        agent = agent_with_mocks
+        agent._local_client = None
+        assert agent._step_gsa_probe([ChatMessage(role="user", content="x")]) is None
+
+    def test_probe_uses_v4_prompt(self, agent_with_mocks):
+        from autodidact.llm_client import ChatMessage
+        agent = agent_with_mocks
+        agent._step_gsa_probe([ChatMessage(role="user", content="do a thing")])
+        assert agent._step_gsa is not None
+        assert agent._step_gsa._version == "v4"
+        assert "v4" in agent._step_gsa.prompt_version
+
+    def test_executor_gets_gsa_when_enabled(self, agent_with_mocks):
+        agent = agent_with_mocks
+        agent.gsa_enabled = True
+        ex = agent._get_executor()
+        assert ex._gsa is not None
+
+    def test_executor_no_gsa_when_disabled(self, agent_with_mocks):
+        agent = agent_with_mocks
+        agent.gsa_enabled = False
+        ex = agent._get_executor()
+        assert ex._gsa is None
+
+
 class TestSavings:
     """Test cost tracking."""
 

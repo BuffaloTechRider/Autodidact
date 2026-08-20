@@ -294,6 +294,7 @@ class Agent:
         self._history: list[dict] = []
         self.documents: Optional[DocumentStore] = None
         self._gsa: Optional[SelfAssessment] = None
+        self._step_gsa: Optional[SelfAssessment] = None
         self._query_stages: Optional[list] = None
         self._correct_stages: Optional[list] = None
         self._executor: Optional[Executor] = None
@@ -569,13 +570,41 @@ class Agent:
             router=FixedThresholdRouter(),
             estimate_cost=self._estimate_cost,
             memory=self._task_memory_probe,
-            # GSA pre-gate is a single-query probe; adapting it to a running
-            # trajectory ("what's the query mid-task?") is an FR-1 refinement,
-            # not front-door plumbing. Left disabled here; step-level logprob
-            # routing (the moat) is active.
-            gsa=None,
+            # GSA pre-gate: a per-step "can local handle this?" probe. The A7
+            # baseline found the local model is *confident but wrong* ~23% of
+            # the time and logprob alone doesn't catch it, so we run the GSA
+            # signal (v4 adversarial-trust prompt, built to deflate YES-bias)
+            # as an orthogonal check before each step. Only meaningful with a
+            # cloud model to escalate to; the executor no-ops the gate otherwise.
+            gsa=self._step_gsa_probe if self.gsa_enabled else None,
         )
         return self._executor
+
+    def _step_gsa_probe(self, messages: list[ChatMessage]) -> Optional[float]:
+        """GsaProbe adapter: p_yes that the local model can handle the next step.
+
+        The executor's gate hands us the running trajectory; ``SelfAssessment``
+        wants a single query string. We reconstruct one from the task plus a
+        compact tail of what's happened so far (recent tool results), so the
+        probe reflects "given progress to date, can local do the next action?".
+        Uses the v4 adversarial-trust prompt to counter the YES-bias that made
+        the A7 confident-but-wrong cases slip through. Returns None on any
+        failure so the executor simply skips the gate for that step.
+        """
+        if self._local_client is None:
+            return None
+        try:
+            if getattr(self, "_step_gsa", None) is None:
+                self._step_gsa = SelfAssessment(
+                    self._local_client, prompt_version="v4",
+                )
+            query = _messages_to_gsa_query(messages)
+            if not query:
+                return None
+            return self._step_gsa.compute(query).p_yes
+        except Exception as e:
+            logger.debug("Step GSA probe failed; skipping gate: %s", e)
+            return None
 
     def _task_memory_probe(self, task: str) -> Optional[MemoryHit]:
         """Task-entry memory tier: a fresh, high-similarity stored answer for
@@ -1273,3 +1302,30 @@ def _cloud_response_is_non_answer(text: str) -> bool:
         return True
     lowered = text[:300].lower()
     return any(marker in lowered for marker in _NON_ANSWER_MARKERS)
+
+
+# Cap on how much recent tool output we fold into the GSA probe query — enough
+# for the probe to judge "can I do the next step given progress so far?" without
+# blowing up the single-token classification prompt.
+_GSA_QUERY_TAIL_CHARS = 800
+
+
+def _messages_to_gsa_query(messages: list[ChatMessage]) -> str:
+    """Build a GSA probe query from the executor's running trajectory.
+
+    Combines the task (first user turn) with a compact tail of the most recent
+    tool result, so the probe reflects the state the next step acts on rather
+    than only the original prompt. Returns "" when there's nothing to probe.
+    """
+    task = next(
+        (m.content for m in messages if m.role == "user" and m.content), ""
+    )
+    last_tool = next(
+        (m.content for m in reversed(messages) if m.role == "tool" and m.content), ""
+    )
+    if not task and not last_tool:
+        return ""
+    if not last_tool:
+        return task
+    tail = last_tool[-_GSA_QUERY_TAIL_CHARS:]
+    return f"{task}\n\nLatest tool result:\n{tail}"
