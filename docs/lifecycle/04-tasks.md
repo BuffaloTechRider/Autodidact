@@ -20,7 +20,7 @@
 | A4 | Backend `tools` parameter (Ollama + OpenAI) | FR-2, FR-5 | ✅ | commit `dfaaa54`; `autodidact/llm/{backend,ollama,openai}.py` |
 | A5 | Tool registry (self-register, function schemas, dispatch envelope) | FR-5 | ✅ | Recovered. `autodidact/tools/registry.py`; tests in `tests/test_tools.py`. |
 | A6 | Terminal + file-ops tools | FR-2, FR-5 | ✅ | `autodidact/tools/{terminal,file_ops,fuzzy_match}.py`; tests in `tests/test_tools.py`, `tests/test_fuzzy_match.py`. |
-| A7 | NFR-2 baseline: log cloud/local/memory split on ~50 real multi-step tasks | NFR-2 | ⬜ | The adversarial-check measurement from `00-problem.md`. Do before Phase B to confirm ROI. |
+| A7 | NFR-2 baseline: log cloud/local/memory split on ~50 real multi-step tasks | NFR-2 | ✅ | **Answered (clean cloud run).** Corpus `benchmarks/multistep_tasks.py` (59 tasks, 31 verifiers); runner `benchmarks/a7_baseline.py` (local + `--cloud`). Report: `results/a7_cloud_full.md` (58/59 completed, no token failures). **Findings:** cloud share tiny — **3/59 tasks escalated, ~2% of steps, $0.02 total**; correctness **24/31 (77%)**, hard **10/16**; **4 confident-but-wrong** (m09, x04, x05, x06). Tier mix flat across difficulty (LOCAL 96/87/91%) → difficulty **entangled**, not separable (caution on per-step routing ROI); the confident-but-wrong set → **logprob-only routing is miscalibrated → GSA + verification earn their keep.** Bedrock tool-calling landed (PR #82) to enable this. |
 
 ## Phase B — Execution Loop
 
