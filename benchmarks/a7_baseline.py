@@ -83,19 +83,21 @@ def _run_one(
     task: MultiStepTask, local: LLMClient, conn,
     cloud: "Optional[LLMClient]" = None,
     estimate_cost: "Optional[object]" = None,
+    gsa: "Optional[object]" = None,
 ) -> TaskOutcome:
     """Run a single task in an isolated sandbox dir and read back its trajectory.
 
     cloud=None → local-only baseline (tier is *intended*, recovered from
     logprob). cloud set → real escalation: uncertain/low-confidence tool steps
     regenerate on the cloud model, so the recorded tier reflects actual routing
-    and cost accrues.
+    and cost accrues. gsa set → per-step GSA pre-gate (validates the
+    verification path against the A7 confident-but-wrong set).
     """
     store = TrajectoryStore(conn)
     executor = Executor(
         local=local, cloud=cloud, tools=REGISTRY,
         router=FixedThresholdRouter(), store=store, max_iterations=12,
-        estimate_cost=estimate_cost,
+        estimate_cost=estimate_cost, gsa=gsa,
     )
 
     verify = verifier_for(task.task_id)
@@ -270,11 +272,15 @@ def main() -> int:
                    help="Enable real cloud escalation (spends Bedrock tokens)")
     p.add_argument("--cloud-model", default="us.anthropic.claude-sonnet-4-5-20250929-v1:0")
     p.add_argument("--bedrock-region", default="us-west-2")
+    p.add_argument("--gsa", action="store_true",
+                   help="Enable the v4 GSA pre-gate (validates the verification path)")
     p.add_argument("--out", default="results/a7_baseline.md")
     args = p.parse_args()
 
     tasks = pilot_tasks(args.n_pilot) if args.pilot else load_tasks()
     mode = "CLOUD" if args.cloud else "LOCAL-ONLY"
+    if args.gsa:
+        mode += "+GSA"
     logger.info("A7 %s %s run: %d tasks", "PILOT" if args.pilot else "FULL", mode, len(tasks))
 
     local = LLMClient(LLMConfig(
@@ -290,13 +296,32 @@ def main() -> int:
         estimate_cost = lambda i, o: (i * 3.0 + o * 15.0) / 1_000_000
         logger.warning("CLOUD mode: escalations will spend Bedrock tokens (%s)", args.cloud_model)
 
+    # GSA pre-gate: reuse the exact v4 probe + query builder Agent.run() uses,
+    # so this validates the shipped verification path, not a bespoke copy.
+    gsa_probe = None
+    if args.gsa:
+        from autodidact.agent import _messages_to_gsa_query
+        from autodidact.signals.grounded_self_assessment import SelfAssessment
+        _sa = SelfAssessment(local, prompt_version="v4")
+
+        def gsa_probe(messages):  # noqa: E731 — small local adapter
+            q = _messages_to_gsa_query(messages)
+            if not q:
+                return None
+            try:
+                return _sa.compute(q).p_yes
+            except Exception:
+                return None
+        logger.info("GSA pre-gate ON (v4 adversarial-trust)")
+
     conn = init_database(":memory:")
 
     outcomes: list[TaskOutcome] = []
     for i, task in enumerate(tasks, 1):
         logger.info("[%d/%d] %s (%s)", i, len(tasks), task.task_id, task.difficulty)
         try:
-            outcomes.append(_run_one(task, local, conn, cloud=cloud, estimate_cost=estimate_cost))
+            outcomes.append(_run_one(task, local, conn, cloud=cloud,
+                                     estimate_cost=estimate_cost, gsa=gsa_probe))
         except Exception as e:
             logger.warning("task %s failed: %s", task.task_id, e)
             outcomes.append(TaskOutcome(
