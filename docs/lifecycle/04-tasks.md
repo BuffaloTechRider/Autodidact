@@ -20,7 +20,8 @@
 | A4 | Backend `tools` parameter (Ollama + OpenAI) | FR-2, FR-5 | ✅ | commit `dfaaa54`; `autodidact/llm/{backend,ollama,openai}.py` |
 | A5 | Tool registry (self-register, function schemas, dispatch envelope) | FR-5 | ✅ | Recovered. `autodidact/tools/registry.py`; tests in `tests/test_tools.py`. |
 | A6 | Terminal + file-ops tools | FR-2, FR-5 | ✅ | `autodidact/tools/{terminal,file_ops,fuzzy_match}.py`; tests in `tests/test_tools.py`, `tests/test_fuzzy_match.py`. |
-| A7 | NFR-2 baseline: log cloud/local/memory split on ~50 real multi-step tasks | NFR-2 | ✅ | **Answered (clean cloud run).** Corpus `benchmarks/multistep_tasks.py` (59 tasks, 31 verifiers); runner `benchmarks/a7_baseline.py` (local + `--cloud`). Report: `results/a7_cloud_full.md` (58/59 completed, no token failures). **Findings:** cloud share tiny — **3/59 tasks escalated, ~2% of steps, $0.02 total**; correctness **24/31 (77%)**, hard **10/16**; **4 confident-but-wrong** (m09, x04, x05, x06). Tier mix flat across difficulty (LOCAL 96/87/91%) → difficulty **entangled**, not separable (caution on per-step routing ROI); the confident-but-wrong set → **logprob-only routing is miscalibrated → GSA + verification earn their keep.** Bedrock tool-calling landed (PR #82) to enable this. |
+| A7 | NFR-2 baseline: log cloud/local/memory split on ~50 real multi-step tasks | NFR-2 | ✅ | **Answered (clean cloud run).** Corpus `benchmarks/multistep_tasks.py` (59 tasks, 31 verifiers); runner `benchmarks/a7_baseline.py` (local + `--cloud`). Report: `results/a7_cloud_full.md` (58/59 completed, no token failures). **Findings:** cloud share tiny — **3/59 tasks escalated, ~2% of steps, $0.02 total**; correctness **24/31 (77%)**, hard **10/16**; **4 confident-but-wrong** (m09, x04, x05, x06). Tier mix flat across difficulty (LOCAL 96/87/91%) → difficulty **entangled**, not separable (caution on per-step routing ROI); the confident-but-wrong set → **logprob-only routing is miscalibrated.** Bedrock tool-calling (`de13b7b`) enabled the cloud run. **Follow-up validation returned a NEGATIVE result — see A8.** |
+| A8 | Validate the GSA pre-gate against A7's confident-but-wrong set | NFR-2, FR-1 | ✅ | **Negative result — do not enable the step pre-gate.** Ran the corpus with `--cloud --gsa` (v4 adversarial-trust). Report: `results/a7_gsa_full.md`. vs the GSA-off run: escalated **28/59 tasks (was 3)**, 44 escalations (was 3), cost **$0.25 (was $0.02, ~12×)**, and correctness **FELL to 21/30 (70%) from 24/31 (77%)**. It did **not** rescue the target tasks — m09/x04/x05 stayed peak-LOCAL and wrong; x06 inconclusive (transient network error). Over-escalates easy tasks (easy CLOUD share 0% → 37%) while still missing the real errors. **Why:** a per-step *"can you do the next action?"* probe fires before the error exists, and a confidently-wrong model answers "yes" — GSA and logprob are both *confidence* signals, i.e. the same axis. The A7 errors are wrong *reasoning inside a step the model is confident about*. **Implication:** the missing signal is a **correctness** check on the produced output (post-hoc answer verification), not another confidence probe. Note GSA's original purpose was latency/cost (skip a doomed local generation, `executor.py:239`), which this run did **not** evaluate — the negative result is scoped to correctness. |
 
 ## Phase B — Execution Loop
 
@@ -69,7 +70,48 @@
 
 ## Immediate next actions
 
-1. **Run A7** (cloud/local/memory split baseline) to confirm the apprentice-agent ROI — the last open Phase A item and the adversarial-check measurement from `00-problem.md`.
-2. **B5 follow-ups:** (a) convert `query()`/`chat()` to shims over `run()` now that the front door is proven; (b) a learning `StepRouter` (Thompson per-step posteriors) to replace `FixedThresholdRouter`; (c) escalate low-confidence *text* answers in the loop so `run()` fully subsumes `query()`'s Q&A routing.
-3. **B6:** full execution-mode renderer (`[STEP]/[SKILL]/[ESCALATING]`) in `thought_renderer.py` (minimal progress printing already in `do`).
-4. **B4 reconciliation:** decide whether `trajectory_store` satisfies the execution-trace requirement or a distinct `execution_traces` table is still needed for the Phase C skill reviewer.
+> Current as of 2026-09-11. Phase A is complete (A7/A8 done). All executor +
+> Bedrock + A7 work is on `main` via PR #83.
+
+1. **⚠️ Turn the GSA step pre-gate off by default (bug, do this first).**
+   `Agent._get_executor()` passes `gsa=self._step_gsa_probe if self.gsa_enabled else None`
+   (`autodidact/agent.py:579`), and `gsa_enabled` defaults to `True`
+   (`autodidact/agent.py:150`) — so `Agent.run()` currently ships the pre-gate **on**, which is exactly
+   the configuration **A8 measured as ~12× cost and *worse* correctness**. Don't
+   just flip `gsa_enabled`: it is shared with the `query()` path, where the
+   pre-gate is long-standing and fine. Add a separate `gsa_step_pregate` flag
+   defaulting to `False` and gate the executor on that. Verify: a test asserting
+   `_get_executor()._gsa is None` by default.
+2. **Verification path — decide before building.** A8 says another *confidence*
+   probe won't fix confident-but-wrong; the candidate is **post-hoc answer
+   verification** (run the step, check the produced output, escalate on failure).
+   This is a new subsystem and was **not** approved — treat it as a proposal
+   needing a go/no-go, not a queued task. Counter-argument on record: escalation
+   is already rare and cheap ($0.02/59 tasks), so this is a correctness
+   investment, not a cost one, and it rests on one 7B model + one corpus.
+3. **B5 follow-ups:** (a) convert `query()`/`chat()` to shims over `run()` now that
+   the front door is proven; (b) a learning `StepRouter` (Thompson per-step
+   posteriors) to replace `FixedThresholdRouter`; (c) escalate low-confidence
+   *text* answers in the loop so `run()` fully subsumes `query()`'s Q&A routing.
+4. **B6:** full execution-mode renderer (`[STEP]/[SKILL]/[ESCALATING]`) in
+   `thought_renderer.py` (minimal progress printing already in `do`).
+5. **B4 reconciliation:** decide whether `trajectory_store` satisfies the
+   execution-trace requirement or a distinct `execution_traces` table is still
+   needed for the Phase C skill reviewer.
+6. **Stale PRs:** #80, #81, #82 read as open but their content is already on `main`
+   — PR #83 rebase-merged the same changes under new SHAs, so GitHub didn't
+   auto-close them. Close with a pointer to #83. (#73 and #9 are older, unrelated.)
+
+## Reproducing the A7 benchmarks
+
+```bash
+python -m benchmarks.a7_baseline                      # local-only, $0
+python -m benchmarks.a7_baseline --cloud              # real escalation (~$0.02, ~18min)
+python -m benchmarks.a7_baseline --cloud --gsa        # + GSA pre-gate (~$0.25 — the A8 negative result)
+```
+
+Needs Ollama running with `qwen2.5:7b` + `qllama/bge-large-en-v1.5`, and valid AWS
+credentials for Bedrock (`us.anthropic.claude-sonnet-4-5-...`, us-west-2). The
+`--cloud` runs take ~18 min and the AWS session token has expired mid-run twice —
+if tasks fail with `ExpiredTokenException`/`ClientError`, re-auth and re-run rather
+than trusting the cost/share numbers.
